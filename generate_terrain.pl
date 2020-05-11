@@ -1,6 +1,8 @@
 #!/usr/bin/perl -w
 #
 # Script to create a 2D terrain of nodes
+#
+# modified copy of https://github.com/rainbow-src/sensors/tree/master/terrain%20generators
 
 use strict;
 use Math::Random;
