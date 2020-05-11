@@ -16,6 +16,7 @@
 # Assumptions (or work in progress):                                              #
 # -- All uplink transmissions are performed over the same channel                 #
 # -- Acks do not collide to each other                                            #
+# -- SFs are fixed throughout the process (RSSI based)                            #
 #                                                                                 #
 # author: Dr. Dimitrios Zorbas                                                    #
 # email: dimzorbas@ieee.org                                                       #
@@ -27,6 +28,7 @@ use POSIX;
 use List::Util qw(min max);
 use Time::HiRes qw(time);
 use Math::Random qw(random_uniform random_exponential);
+use Term::ProgressBar 2.00;
 
 die "usage: ./LoRaWAN.pl full_collision_check(0/1) packets_per_hour simulation_time(secs) terrain_file!\n" unless (scalar @ARGV == 4);
 
@@ -56,6 +58,7 @@ my $Pidle_w = 30 / 1000;
 my @thresholds = ([6,-16,-18,-19,-19,-20], [-24,6,-20,-22,-22,-22], [-27,-27,6,-23,-25,-25], [-30,-30,-30,6,-26,-28], [-33,-33,-33,-33,6,-29], [-36,-36,-36,-36,-36,6]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
 my $full_collision = $ARGV[0]; # take into account non-orthogonal SF transmissions or not
 my $sim_time = $ARGV[2];
+my $debug = 0;
 
 my @pl = (50, 50, 50, 50, 50, 50); # payload size per SF (bytes)
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side (not currenly being used)
@@ -67,6 +70,14 @@ my $acked = 0; # number of acknowledged packets
 my $no_rx1 = 0; # number of times none of gw was not available in RX1
 my $no_rx2 = 0; # number of times none of gw was not available in RX1 or RX2
 
+my $progress = Term::ProgressBar->new({
+	name  => 'Progress',
+	count => $sim_time,
+	ETA   => 'linear',
+});
+$progress->max_update_rate(2);
+my $next_update = 0;
+
 read_data(); # read terrain file
 
 foreach my $n (keys %ncoords){
@@ -74,13 +85,11 @@ foreach my $n (keys %ncoords){
 	$retransmisssions{$n} = 0;
 }
 
-my @examined = ();
-
-# initial transmission
+# first transmission
 foreach my $n (keys %ncoords){
 	my $start = random_uniform(1, 0, $period);
 	my $stop = $start + airtime($SF{$n});
-	print "# $n will transmit from $start to $stop\n";
+	print "# $n will transmit from $start to $stop\n" if ($debug == 1);
 	$transmissions{$n} = [$start, $stop];
 	$consumption{$n} += airtime($SF{$n}) * $Ptx_w + (airtime($SF{$n})+1) * $Pidle_w;
 	$total_trans += 1;
@@ -88,8 +97,8 @@ foreach my $n (keys %ncoords){
 
 # main loop
 while (1){
-	print "-------------------------------\n";
-	printf "# %d transmissions available \n", scalar keys %transmissions;
+	print "-------------------------------\n" if ($debug == 1);
+	printf "# %d transmissions available \n", scalar keys %transmissions if ($debug == 1);
 	# grab the earliest transmission
 	my $sel_sta = 9999999999999;
 	my $sel_end = 0;
@@ -102,8 +111,13 @@ while (1){
 			$sel = $n;
 		}
 	}
-	last if (!defined $sel);
-	print "# grabbed $sel, transmission at $sel_sta -> $sel_end\n";
+	$next_update = $progress->update($sel_end);
+	if (!defined $sel){
+		$next_update = $progress->update($sim_time);
+		$progress->update($sim_time);
+		last;
+	}
+	print "# grabbed $sel, transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 
 	# check for collisions with other transmissions (time, SF, power) per gw
 	my @gw_rc = ();
@@ -117,7 +131,7 @@ while (1){
 		my $prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
 		if ($prx < $sensis[$SF{$sel}-7][bwconv($bw)]){
 			$surpressed{$sel}{$gw} = 1;
-			print "# packet didn't reach gw $gw\n";
+			print "# packet didn't reach gw $gw\n" if ($debug == 1);
 			next;
 		}
 		foreach my $n (keys %transmissions){
@@ -139,31 +153,31 @@ while (1){
 				if ((abs($prx - $prx_) <= $thresholds[$SF{$sel}-7][$SF{$n}-7]) ){ # both collide
 					$surpressed{$sel}{$gw} = 1;
 					$surpressed{$n}{$gw} = 1;
-					print "# $sel collided together with $n at gateway $gw\n";
+					print "# $sel collided together with $n at gateway $gw\n" if ($debug == 1);
 				}
 				if (($prx_ - $prx) > $thresholds[$SF{$sel}-7][$SF{$n}-7]){ # n suppressed sel
 					$surpressed{$sel}{$gw} = 1;
-					print "# $sel surpressed by $n at gateway $gw\n";
+					print "# $sel surpressed by $n at gateway $gw\n" if ($debug == 1);
 				}
 				if (($prx - $prx_) > $thresholds[$SF{$n}-7][$SF{$sel}-7]){ # sel suppressed n
 					$surpressed{$n}{$gw} = 1;
-					print "# $n surpressed by $sel at gateway $gw\n";
+					print "# $n surpressed by $sel at gateway $gw\n" if ($debug == 1);
 				}
 			}
 			if (($overlap == 1) && ($full_collision == 1)){ # non-orthogonality
 				if (($prx - $prx_) > $thresholds[$SF{$sel}-7][$SF{$n}-7]){
 					if (($prx_ - $prx) <= $thresholds[$SF{$n}-7][$SF{$sel}-7]){
 						$surpressed{$n}{$gw} = 1;
-						print "# $n surpressed by $sel\n";
+						print "# $n surpressed by $sel\n" if ($debug == 1);
 					}
 				}else{
 					if (($prx_ - $prx) > $thresholds[$SF{$n}-7][$SF{$sel}-7]){
 						$surpressed{$sel}{$gw} = 1;
-						print "# $sel surpressed by $n\n";
+						print "# $sel surpressed by $n\n" if ($debug == 1);
 					}else{
 						$surpressed{$sel}{$gw} = 1;
 						$surpressed{$n}{$gw} = 1;
-						print "# $sel collided together with $n\n";
+						print "# $sel collided together with $n\n" if ($debug == 1);
 					}
 				}
 			}
@@ -175,7 +189,7 @@ while (1){
 	if (scalar @gw_rc > 0){ # successful transmission
 		# remove old transmission
 		delete $transmissions{$sel};
-		print "# $sel transmitted successfully!\n";
+		print "# $sel transmitted successfully!\n" if ($debug == 1);
 		# check which gw can send an ack (RX1)
 		my $max_p = -9999999999999;
 		my $sel_gw = undef;
@@ -191,7 +205,7 @@ while (1){
 			}
 		}
 		if (defined $sel_gw){
-			print "# gw $sel_gw will transmit an ack to $sel\n";
+			print "# gw $sel_gw will transmit an ack to $sel\n" if ($debug == 1);
 			$gunavailability{$sel_gw} = [$ack_sta, $ack_end];
 			$gdc{$sel_gw} = $ack_end+airtime($SF{$sel}, 8)*10;
 			$retransmisssions{$sel} = 0;
@@ -214,7 +228,7 @@ while (1){
 				}
 			}
 			if (defined $sel_gw){
-				print "# gw $sel_gw will transmit an ack to $sel\n";
+				print "# gw $sel_gw will transmit an ack to $sel\n" if ($debug == 1);
 				$gunavailability{$sel_gw} = [$ack_sta, $ack_end];
 				$gdc{$sel_gw} = $ack_end+airtime(12, 8)*10;
 				$retransmisssions{$sel} = 0;
@@ -223,14 +237,14 @@ while (1){
 				$consumption{$sel} += airtime(12, 8) * $Prx_w + (airtime(12, 8)+1) * $Pidle_w;
 			}else{
 				$no_rx2 += 1;
-				print "# no gateway is available\n";
+				print "# no gateway is available\n" if ($debug == 1);
 				if ($retransmisssions{$sel} < $max_retr){
 					$retransmisssions{$sel} += 1;
 					$to_retrans = 1;
 				}else{
 					$dropped += 1;
 					$retransmisssions{$sel} = 0;
-					print "# $sel 's packet lost!\n";
+					print "# $sel 's packet lost!\n" if ($debug == 1);
 				}
 			}
 		}
@@ -242,7 +256,7 @@ while (1){
 		}else{
 			$dropped += 1;
 			$retransmisssions{$sel} = 0;
-			print "# $sel 's packet lost!\n";
+			print "# $sel 's packet lost!\n" if ($debug == 1);
 		}
 		$consumption{$sel} += airtime($SF{$sel}, 8) * $Prx_w + (airtime($SF{$sel}, 8)+1) * $Pidle_w;
 		$consumption{$sel} += airtime(12, 8) * $Prx_w + (airtime(12, 8)+1) * $Pidle_w;
@@ -252,16 +266,21 @@ while (1){
 	}
 	my $at = airtime($SF{$sel});
 	$sel_sta = $sel_end + $rwindow + $period + rand(1);
+	my $next_allowed = $sel_end + 99*$at;
+	if ($sel_sta < $next_allowed){
+		print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
+		$sel_sta = $next_allowed;
+	}
 	if ($sel_sta < $sim_time){
 		$sel_end = $sel_sta+$at;
 		$transmissions{$sel} = [$sel_sta, $sel_end];
 		$total_trans += 1;
 		$total_retrans += 1 if ($to_retrans == 1);
-		print "# $sel, new transmission at $sel_sta -> $sel_end\n";
+		print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 		$consumption{$sel} += $at * $Ptx_w + (airtime($SF{$sel})+1) * $Pidle_w;
 	}
 }
-print "---------------------\n";
+# print "---------------------\n";
 
 my $avg_cons = 0;
 foreach my $n (keys %SF){
@@ -287,11 +306,10 @@ sub min_sf{
 	my $bwi = bwconv($bw);
 	foreach my $gw (keys %gcoords){
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
-		my $succ = 0;
 		for (my $f=7; $f<=12; $f+=1){
 			my $S = $sensis[$f-7][$bwi];
 			my $Prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
-			if (($Prx - 20) > $S){
+			if (($Prx - 10) > $S){ # 10dBm tolerance
 				$sf = $f;
 				$f = 13;
 				last;
@@ -303,7 +321,7 @@ sub min_sf{
 		print "terrain too large?\n";
 		exit;
 	}
-	print "# $n can reach a gw with SF$sf\n";
+	print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
 	return $sf;
 }
 
