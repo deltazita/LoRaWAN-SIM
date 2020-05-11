@@ -16,6 +16,7 @@ A LoRaWAN simulator for confirmable transmissions and multiple gateways
 
 ## Dependencies:
 - https://metacpan.org/pod/Math::Random
+- https://metacpan.org/pod/Term::ProgressBar
 - https://metacpan.org/pod/GD::SVG (optional for draw_terrain script)
 
 ## Usage:
