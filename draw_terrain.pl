@@ -2,9 +2,7 @@
 #
 # Script to create svg file from 2d terrain data
 #
-# by Dimitris Glynos (daglyn/at/unipi/gr)
-# several modofications by Dimitris Zorbas (jim/at/students/cs/unipi/gr)
-# Distributed under the GPLv3 (see LICENSE file)
+# copied from https://github.com/rainbow-src/sensors/tree/master/terrain%20generators
 
 use GD::SVG;
 use strict;
