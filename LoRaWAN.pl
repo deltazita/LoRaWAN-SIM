@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for confirmable LoRaWAN transmissions            #
-#                                 v2020.5.11                                      #
+#                                 v2020.5.12                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -34,41 +34,59 @@ die "usage: ./LoRaWAN.pl full_collision_check(0/1) packets_per_hour simulation_t
 
 # node attributes
 my %ncoords = (); # node coordinates
-my %consumption = (); # consumption
-my %SF = (); # Spreading Factor
-my %transmissions = (); # current transmission
-my %retransmisssions = (); # retransmisssions per node
+my %nconsumption = (); # consumption
+my %nSF = (); # Spreading Factor
+my %ntransmissions = (); # current transmission
+my %nretransmisssions = (); # retransmisssions per node
 my %surpressed = ();
-my $period = 3600/$ARGV[1]; # packets per hour
 
 # gw attributes
 my %gcoords = (); # gw coordinates
 my %gunavailability = (); # unavailable gw time due to downlink
 my %gdc = (); # gw duty cycle 
+my %gresponses = (); # for statistics
 
-# simulation and propagation parameters
-my $max_retr = 8; # max number of retransmisssions per packet
+# LoRa PHY and LoRaWAN parameters
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW
-my $bw = 125; # bandwidth
+my @thresholds = ([6,-16,-18,-19,-19,-20], [-24,6,-20,-22,-22,-22], [-27,-27,6,-23,-25,-25], [-30,-30,-30,6,-26,-28], [-33,-33,-33,-33,6,-29], [-36,-36,-36,-36,-36,6]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
 my $var = 3.57; # variance
 my ($dref, $Ptx, $Lpld0, $gamma) = (40, 14, 95, 2.08); # attenuation model parameters
-my $Ptx_w = 76 * 3.5 / 1000; # mW
-my $Prx_w = 46 * 3.5 / 1000;
-my $Pidle_w = 30 / 1000;
-my @thresholds = ([6,-16,-18,-19,-19,-20], [-24,6,-20,-22,-22,-22], [-27,-27,6,-23,-25,-25], [-30,-30,-30,6,-26,-28], [-33,-33,-33,-33,6,-29], [-36,-36,-36,-36,-36,6]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
+my $max_retr = 8; # max number of retransmisssions per packet
+my $bw = 125; # channel bandwidth
+my $cr = 1; # Coding Rate
+my $Ptx_w = 76 * 3.3 / 1000; # mW
+my $Prx_w = 46 * 3.3 / 1000;
+my $Pidle_w = 30 * 3.3 / 1000;
+
+# packet specific parameters
+my @fpl = (51, 51, 51, 51, 51, 51); # frame payload size per SF (bytes)
+my $preamble = 8; # in symbols
+my $H = 0; # header 0/1
+my $hcrc = 0; # HCRC bytes
+my $CRC = 1; # 0/1
+my $mhdr = 1; # MAC header (bytes)
+my $mic = 4; # MIC bytes
+my $fhdr = 11; # frame header includes 4B for the ADR in Fopts. No other commands are used
+my $fport_u = 1; # 1B for FPort for uplink, 0B for downlink (commands are included in Fopts)
+my $fport_d = 0; # 0B for FPort for downlink (commands are included in Fopts, acks have no payload)
+my $overhead_u = $mhdr+$mic+$fhdr+$fport_u+$hcrc; # LoRa+LoRaWAN uplink overhead
+my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhead
+my @pl_u = ($fpl[0]+$overhead_u, $fpl[1]+$overhead_u, $fpl[2]+$overhead_u, $fpl[3]+$overhead_u, $fpl[4]+$overhead_u, $fpl[5]+$overhead_u);
+
+# simulation parameters
 my $full_collision = $ARGV[0]; # take into account non-orthogonal SF transmissions or not
+my $period = 3600/$ARGV[1]; # time period between transmissions
 my $sim_time = $ARGV[2];
 my $debug = 0;
-
-my @pl = (50, 50, 50, 50, 50, 50); # payload size per SF (bytes)
+my $sim_end = 0;
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side (not currenly being used)
 my $start_time = time; # just for statistics
 my $dropped = 0; # number of dropped packets
 my $total_trans = 0; # number of transm. packets
 my $total_retrans = 0; # number of re-transm packets
 my $acked = 0; # number of acknowledged packets
-my $no_rx1 = 0; # number of times none of gw was not available in RX1
-my $no_rx2 = 0; # number of times none of gw was not available in RX1 or RX2
+my $no_rx1 = 0; # no gw was available in RX1
+my $no_rx2 = 0; # no gw was available in RX1 or RX2
 
 my $progress = Term::ProgressBar->new({
 	name  => 'Progress',
@@ -81,30 +99,29 @@ my $next_update = 0;
 read_data(); # read terrain file
 
 foreach my $n (keys %ncoords){
-	$SF{$n} = min_sf($n);
-	$retransmisssions{$n} = 0;
+	$nSF{$n} = min_sf($n);
+	$nretransmisssions{$n} = 0;
 }
 
 # first transmission
 foreach my $n (keys %ncoords){
-	my $start = random_uniform(1, 0, $period);
-	my $stop = $start + airtime($SF{$n});
+	my $start = random_uniform(1, 0, $period); # transmissions are periodic
+	my $stop = $start + airtime($nSF{$n});
 	print "# $n will transmit from $start to $stop\n" if ($debug == 1);
-	$transmissions{$n} = [$start, $stop];
-	$consumption{$n} += airtime($SF{$n}) * $Ptx_w + (airtime($SF{$n})+1) * $Pidle_w;
+	$ntransmissions{$n} = [$start, $stop];
+	$nconsumption{$n} += airtime($nSF{$n}) * $Ptx_w + (airtime($nSF{$n})+1) * $Pidle_w; # +1sec for sensing
 	$total_trans += 1;
 }
 
 # main loop
 while (1){
 	print "-------------------------------\n" if ($debug == 1);
-	printf "# %d transmissions available \n", scalar keys %transmissions if ($debug == 1);
 	# grab the earliest transmission
 	my $sel_sta = 9999999999999;
 	my $sel_end = 0;
 	my $sel = undef;
-	foreach my $n (keys %transmissions){
-		my ($sta, $end) = @{$transmissions{$n}};
+	foreach my $n (keys %ntransmissions){
+		my ($sta, $end) = @{$ntransmissions{$n}};
 		if ($sta < $sel_sta){
 			$sel_sta = $sta;
 			$sel_end = $end;
@@ -118,6 +135,7 @@ while (1){
 		last;
 	}
 	print "# grabbed $sel, transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
+	$sim_end = $sel_end;
 
 	# check for collisions with other transmissions (time, SF, power) per gw
 	my @gw_rc = ();
@@ -129,13 +147,13 @@ while (1){
 		my $d = distance($gcoords{$gw}[0], $ncoords{$sel}[0], $gcoords{$gw}[1], $ncoords{$sel}[1]);
 		my $G = rand(1);
 		my $prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
-		if ($prx < $sensis[$SF{$sel}-7][bwconv($bw)]){
+		if ($prx < $sensis[$nSF{$sel}-7][bwconv($bw)]){
 			$surpressed{$sel}{$gw} = 1;
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
 			next;
 		}
-		foreach my $n (keys %transmissions){
-			my ($sta, $end) = @{$transmissions{$n}};
+		foreach my $n (keys %ntransmissions){
+			my ($sta, $end) = @{$ntransmissions{$n}};
 			next if (($n == $sel) || ($sta > $sel_end) || ($end < $sel_sta));
 			my $overlap = 0;
 			# time overlap
@@ -143,35 +161,35 @@ while (1){
 				$overlap += 1;
 			}
 			# SF
-			if ($SF{$n} == $SF{$sel}){
+			if ($nSF{$n} == $nSF{$sel}){
 				$overlap += 2;
 			}
 			# power 
 			my $d_ = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
 			my $prx_ = $Ptx - ($Lpld0 + 10*$gamma * log10($d_/$dref) + rand(1)*$var);
 			if ($overlap == 3){
-				if ((abs($prx - $prx_) <= $thresholds[$SF{$sel}-7][$SF{$n}-7]) ){ # both collide
+				if ((abs($prx - $prx_) <= $thresholds[$nSF{$sel}-7][$nSF{$n}-7]) ){ # both collide
 					$surpressed{$sel}{$gw} = 1;
 					$surpressed{$n}{$gw} = 1;
 					print "# $sel collided together with $n at gateway $gw\n" if ($debug == 1);
 				}
-				if (($prx_ - $prx) > $thresholds[$SF{$sel}-7][$SF{$n}-7]){ # n suppressed sel
+				if (($prx_ - $prx) > $thresholds[$nSF{$sel}-7][$nSF{$n}-7]){ # n suppressed sel
 					$surpressed{$sel}{$gw} = 1;
 					print "# $sel surpressed by $n at gateway $gw\n" if ($debug == 1);
 				}
-				if (($prx - $prx_) > $thresholds[$SF{$n}-7][$SF{$sel}-7]){ # sel suppressed n
+				if (($prx - $prx_) > $thresholds[$nSF{$n}-7][$nSF{$sel}-7]){ # sel suppressed n
 					$surpressed{$n}{$gw} = 1;
 					print "# $n surpressed by $sel at gateway $gw\n" if ($debug == 1);
 				}
 			}
 			if (($overlap == 1) && ($full_collision == 1)){ # non-orthogonality
-				if (($prx - $prx_) > $thresholds[$SF{$sel}-7][$SF{$n}-7]){
-					if (($prx_ - $prx) <= $thresholds[$SF{$n}-7][$SF{$sel}-7]){
+				if (($prx - $prx_) > $thresholds[$nSF{$sel}-7][$nSF{$n}-7]){
+					if (($prx_ - $prx) <= $thresholds[$nSF{$n}-7][$nSF{$sel}-7]){
 						$surpressed{$n}{$gw} = 1;
 						print "# $n surpressed by $sel\n" if ($debug == 1);
 					}
 				}else{
-					if (($prx_ - $prx) > $thresholds[$SF{$n}-7][$SF{$sel}-7]){
+					if (($prx_ - $prx) > $thresholds[$nSF{$n}-7][$nSF{$sel}-7]){
 						$surpressed{$sel}{$gw} = 1;
 						print "# $sel surpressed by $n\n" if ($debug == 1);
 					}else{
@@ -188,12 +206,12 @@ while (1){
 	}
 	if (scalar @gw_rc > 0){ # successful transmission
 		# remove old transmission
-		delete $transmissions{$sel};
+		delete $ntransmissions{$sel};
 		print "# $sel transmitted successfully!\n" if ($debug == 1);
 		# check which gw can send an ack (RX1)
 		my $max_p = -9999999999999;
 		my $sel_gw = undef;
-		my ($ack_sta, $ack_end) = ($sel_end+1, $sel_end+1+airtime($SF{$sel}, 8));
+		my ($ack_sta, $ack_end) = ($sel_end+1, $sel_end+1+airtime($nSF{$sel}, $overhead_d));
 		foreach my $g (@gw_rc){
 			my ($gw, $p) = @$g;
 			my ($sta, $end) = @{$gunavailability{$gw}};
@@ -206,16 +224,17 @@ while (1){
 		}
 		if (defined $sel_gw){
 			print "# gw $sel_gw will transmit an ack to $sel\n" if ($debug == 1);
+			$gresponses{$sel_gw} += 1;
 			$gunavailability{$sel_gw} = [$ack_sta, $ack_end];
-			$gdc{$sel_gw} = $ack_end+airtime($SF{$sel}, 8)*10;
-			$retransmisssions{$sel} = 0;
+			$gdc{$sel_gw} = $ack_end+airtime($nSF{$sel}, $overhead_d)*10;
+			$nretransmisssions{$sel} = 0;
 			$acked += 1;
 			$rwindow += 1;
-			$consumption{$sel} += airtime($SF{$sel}, 8) * $Prx_w + (airtime($SF{$sel}, 8)+1) * $Pidle_w;
+			$nconsumption{$sel} += airtime($nSF{$sel}, $overhead_d) * $Prx_w + airtime($nSF{$sel}, $overhead_d) * $Pidle_w;
 		}else{
 			# check RX2
 			$no_rx1 += 1;
-			my ($ack_sta, $ack_end) = ($sel_end+2, $sel_end+2+airtime(12, 8));
+			my ($ack_sta, $ack_end) = ($sel_end+2, $sel_end+2+airtime(12, $overhead_d));
 			$max_p = -9999999999999;
 			foreach my $g (@gw_rc){
 				my ($gw, $p) = @$g;
@@ -229,42 +248,44 @@ while (1){
 			}
 			if (defined $sel_gw){
 				print "# gw $sel_gw will transmit an ack to $sel\n" if ($debug == 1);
+				$gresponses{$sel_gw} += 1;
 				$gunavailability{$sel_gw} = [$ack_sta, $ack_end];
-				$gdc{$sel_gw} = $ack_end+airtime(12, 8)*10;
-				$retransmisssions{$sel} = 0;
+				$gdc{$sel_gw} = $ack_end+airtime(12, $overhead_d)*10;
+				$nretransmisssions{$sel} = 0;
 				$acked += 1;
 				$rwindow += 2;
-				$consumption{$sel} += airtime(12, 8) * $Prx_w + (airtime(12, 8)+1) * $Pidle_w;
+				$nconsumption{$sel} += airtime(12, $overhead_d) * $Prx_w + airtime(12, $overhead_d) * $Pidle_w;
 			}else{
 				$no_rx2 += 1;
 				print "# no gateway is available\n" if ($debug == 1);
-				if ($retransmisssions{$sel} < $max_retr){
-					$retransmisssions{$sel} += 1;
+				if ($nretransmisssions{$sel} < $max_retr){
+					$nretransmisssions{$sel} += 1;
 					$to_retrans = 1;
 				}else{
 					$dropped += 1;
-					$retransmisssions{$sel} = 0;
+					$nretransmisssions{$sel} = 0;
 					print "# $sel 's packet lost!\n" if ($debug == 1);
 				}
 			}
 		}
-	}else{ # delete collided transmission and assign a new one
-		delete $transmissions{$sel};
-		if ($retransmisssions{$sel} < $max_retr){
-			$retransmisssions{$sel} += 1;
+	}else{ # non-successful transmission
+		delete $ntransmissions{$sel};
+		if ($nretransmisssions{$sel} < $max_retr){
+			$nretransmisssions{$sel} += 1;
 			$to_retrans = 1;
 		}else{
 			$dropped += 1;
-			$retransmisssions{$sel} = 0;
+			$nretransmisssions{$sel} = 0;
 			print "# $sel 's packet lost!\n" if ($debug == 1);
 		}
-		$consumption{$sel} += airtime($SF{$sel}, 8) * $Prx_w + (airtime($SF{$sel}, 8)+1) * $Pidle_w;
-		$consumption{$sel} += airtime(12, 8) * $Prx_w + (airtime(12, 8)+1) * $Pidle_w;
+		# if no ack is sent or it is lost, the node stays on only for the duration of the preamble
+		$nconsumption{$sel} += $preamble*(2**$nSF{$sel})/$bw * ($Prx_w + $Pidle_w);
+		$nconsumption{$sel} += $preamble*(2**12)/$bw * ($Prx_w + $Pidle_w);
 	}
 	foreach my $g (keys %gcoords){
 		$surpressed{$sel}{$g} = 0;
 	}
-	my $at = airtime($SF{$sel});
+	my $at = airtime($nSF{$sel});
 	$sel_sta = $sel_end + $rwindow + $period + rand(1);
 	my $next_allowed = $sel_end + 99*$at;
 	if ($sel_sta < $next_allowed){
@@ -273,22 +294,22 @@ while (1){
 	}
 	if ($sel_sta < $sim_time){
 		$sel_end = $sel_sta+$at;
-		$transmissions{$sel} = [$sel_sta, $sel_end];
+		$ntransmissions{$sel} = [$sel_sta, $sel_end];
 		$total_trans += 1;
 		$total_retrans += 1 if ($to_retrans == 1);
 		print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-		$consumption{$sel} += $at * $Ptx_w + (airtime($SF{$sel})+1) * $Pidle_w;
+		$nconsumption{$sel} += $at * $Ptx_w + (airtime($nSF{$sel})+1) * $Pidle_w;
 	}
 }
 # print "---------------------\n";
 
 my $avg_cons = 0;
-foreach my $n (keys %SF){
-	$avg_cons += $consumption{$n};
+foreach my $n (keys %ncoords){
+	$avg_cons += $nconsumption{$n};
 }
 my $finish_time = time;
-print "Simulation time = $sim_time sec\n";
-printf "Avg node consumption = %.5f J\n", $avg_cons/(scalar keys %SF);
+printf "Simulation time = %.3f secs\n", $sim_end;
+printf "Avg node nconsumption = %.5f mJ\n", $avg_cons/(scalar keys %ncoords);
 print "Total number of transmissions = $total_trans\n";
 print "Total number of re-transmissions = $total_retrans\n";
 printf "Total number of unique transmissions = %d\n", $total_trans-$total_retrans;
@@ -297,6 +318,10 @@ printf "Packet Delivery Ratio = %.9f\n", $acked/($total_trans-$total_retrans);
 print "No GW available in RX1 = $no_rx1 times\n";
 print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
+print "-----\n";
+foreach my $g (sort {$a<=>$b} keys %gcoords){
+	print "GW $g sent out $gresponses{$g} acks\n";
+}
 
 sub min_sf{
 	my $n = shift;
@@ -325,28 +350,19 @@ sub min_sf{
 	return $sf;
 }
 
+# a modified version of LoRaSim (https://www.lancaster.ac.uk/scc/sites/lora/lorasim.html)
 sub airtime{
 	my $sf = shift;
-	my $cr = 1;
-	my $H = 0;       # implicit header disabled (H=0) or not (H=1)
 	my $DE = 0;      # low data rate optimization enabled (=1) or not (=0)
-	my $Npream = 8;  # number of preamble symbol (12.25  from Utz paper)
 	my $payload = shift;
-	$payload = $pl[$sf-7] if (!defined $payload);
-	
+	$payload = $pl_u[$sf-7] if (!defined $payload);
 	if (($bw == 125) && (($sf == 11) || ($sf == 12))){
 		# low data rate optimization mandated for BW125 with SF11 and SF12
 		$DE = 1;
 	}
-	
-	if ($sf == 6){
-		# can only have implicit header with SF6
-		$H = 1;
-	}
-	
 	my $Tsym = (2**$sf)/$bw;
-	my $Tpream = ($Npream + 4.25)*$Tsym;
-	my $payloadSymbNB = 8 + max( ceil((8.0*$payload-4.0*$sf+28+16-20*$H)/(4.0*($sf-2*$DE)))*($cr+4), 0 );
+	my $Tpream = ($preamble + 4.25)*$Tsym;
+	my $payloadSymbNB = 8 + max( ceil((8.0*$payload-4.0*$sf+28+16*$CRC-20*$H)/(4.0*($sf-2*$DE)))*($cr+4), 0 );
 	my $Tpayload = $payloadSymbNB * $Tsym;
 	return ($Tpream + $Tpayload)/1000;
 }
