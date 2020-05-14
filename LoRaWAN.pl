@@ -39,12 +39,13 @@ my %nSF = (); # Spreading Factor
 my %ntransmissions = (); # current transmission
 my %nretransmisssions = (); # retransmisssions per node
 my %surpressed = ();
+my %nch = (); # selected channel
 
 # gw attributes
 my %gcoords = (); # gw coordinates
 my %gunavailability = (); # unavailable gw time due to downlink
 my %gdc = (); # gw duty cycle 
-my %gresponses = (); # for statistics
+my %gresponses = (); # acks carried out per gw (not used yet)
 
 # LoRa PHY and LoRaWAN parameters
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW
@@ -56,10 +57,11 @@ my $bw = 125; # channel bandwidth
 my $cr = 1; # Coding Rate
 my $Ptx_w = 76 * 3.3 / 1000; # mW
 my $Prx_w = 46 * 3.3 / 1000;
-my $Pidle_w = 30 * 3.3 / 1000;
+my $Pidle_w = 30 * 3.3 / 1000; # this is actually the consumption of the microcontroller in idle mode
+my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels (not used yet)
 
 # packet specific parameters
-my @fpl = (51, 51, 51, 51, 51, 51); # frame payload size per SF (bytes)
+my @fpl = (51, 51, 51, 51, 51, 51); # uplink frame payload per SF (bytes)
 my $preamble = 8; # in symbols
 my $H = 0; # header 0/1
 my $hcrc = 0; # HCRC bytes
@@ -67,11 +69,11 @@ my $CRC = 1; # 0/1
 my $mhdr = 1; # MAC header (bytes)
 my $mic = 4; # MIC bytes
 my $fhdr = 11; # frame header includes 4B for the ADR in Fopts. No other commands are used
-my $fport_u = 1; # 1B for FPort for uplink, 0B for downlink (commands are included in Fopts)
+my $fport_u = 1; # 1B for FPort for uplink
 my $fport_d = 0; # 0B for FPort for downlink (commands are included in Fopts, acks have no payload)
 my $overhead_u = $mhdr+$mic+$fhdr+$fport_u+$hcrc; # LoRa+LoRaWAN uplink overhead
 my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhead
-my @pl_u = ($fpl[0]+$overhead_u, $fpl[1]+$overhead_u, $fpl[2]+$overhead_u, $fpl[3]+$overhead_u, $fpl[4]+$overhead_u, $fpl[5]+$overhead_u);
+my @pl_u = ($fpl[0]+$overhead_u, $fpl[1]+$overhead_u, $fpl[2]+$overhead_u, $fpl[3]+$overhead_u, $fpl[4]+$overhead_u, $fpl[5]+$overhead_u); # uplink packet payload per SF (bytes)
 
 # simulation parameters
 my $full_collision = $ARGV[0]; # take into account non-orthogonal SF transmissions or not
@@ -150,6 +152,11 @@ while (1){
 		if ($prx < $sensis[$nSF{$sel}-7][bwconv($bw)]){
 			$surpressed{$sel}{$gw} = 1;
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
+			next;
+		}
+		my ($sta, $end) = @{$gunavailability{$gw}};
+		if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
+			print "# gw not available for uplink\n" if ($debug == 1);
 			next;
 		}
 		foreach my $n (keys %ntransmissions){
@@ -410,7 +417,7 @@ sub read_data{
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
 		$gcoords{$g} = [$x, $y];
-		$gunavailability{$g} = [0, 0];
+		$gunavailability{$g} = [-1, -1];
 		$gdc{$g} = 0;
 		foreach my $n (keys %ncoords){
 			$surpressed{$n}{$g} = 0;
