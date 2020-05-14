@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for confirmable LoRaWAN transmissions            #
-#                                 v2020.5.12                                      #
+#                                 v2020.5.16                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -131,7 +131,8 @@ while (1){
 		}
 	}
 	$next_update = $progress->update($sel_end);
-	if (!defined $sel){
+# 	$progress->update($sel_end);
+	if ($sel_sta > $sim_time){
 		$next_update = $progress->update($sim_time);
 		$progress->update($sim_time);
 		last;
@@ -156,6 +157,7 @@ while (1){
 		}
 		my ($sta, $end) = @{$gunavailability{$gw}};
 		if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
+			$surpressed{$sel}{$gw} = 1;
 			print "# gw not available for uplink\n" if ($debug == 1);
 			next;
 		}
@@ -233,7 +235,7 @@ while (1){
 			print "# gw $sel_gw will transmit an ack to $sel\n" if ($debug == 1);
 			$gresponses{$sel_gw} += 1;
 			$gunavailability{$sel_gw} = [$ack_sta, $ack_end];
-			$gdc{$sel_gw} = $ack_end+airtime($nSF{$sel}, $overhead_d)*10;
+			$gdc{$sel_gw} = $ack_end+airtime($nSF{$sel}, $overhead_d)*90;
 			$nretransmisssions{$sel} = 0;
 			$acked += 1;
 			$rwindow += 1;
@@ -257,7 +259,7 @@ while (1){
 				print "# gw $sel_gw will transmit an ack to $sel\n" if ($debug == 1);
 				$gresponses{$sel_gw} += 1;
 				$gunavailability{$sel_gw} = [$ack_sta, $ack_end];
-				$gdc{$sel_gw} = $ack_end+airtime(12, $overhead_d)*10;
+				$gdc{$sel_gw} = $ack_end+airtime(12, $overhead_d)*90;
 				$nretransmisssions{$sel} = 0;
 				$acked += 1;
 				$rwindow += 2;
@@ -299,29 +301,38 @@ while (1){
 		print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
 		$sel_sta = $next_allowed;
 	}
-	if ($sel_sta < $sim_time){
-		$sel_end = $sel_sta+$at;
-		$ntransmissions{$sel} = [$sel_sta, $sel_end];
-		$total_trans += 1;
-		$total_retrans += 1 if ($to_retrans == 1);
-		print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-		$nconsumption{$sel} += $at * $Ptx_w + (airtime($nSF{$sel})+1) * $Pidle_w;
-	}
+	$sel_end = $sel_sta+$at;
+	$ntransmissions{$sel} = [$sel_sta, $sel_end];
+	$total_trans += 1 if ($sel_sta < $sim_time);
+	$total_retrans += 1 if (($to_retrans == 1) && ($sel_sta < $sim_time));
+	print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
+	$nconsumption{$sel} += $at * $Ptx_w + (airtime($nSF{$sel})+1) * $Pidle_w if ($sel_sta < $sim_time);
 }
 # print "---------------------\n";
 
 my $avg_cons = 0;
+my $min_cons = 99999999999999999999;
+my $max_cons = 0;
 foreach my $n (keys %ncoords){
 	$avg_cons += $nconsumption{$n};
+	if ($nconsumption{$n} < $min_cons){
+		$min_cons = $nconsumption{$n};
+	}
+	if ($nconsumption{$n} > $max_cons){
+		$max_cons = $nconsumption{$n};
+	}
 }
 my $finish_time = time;
 printf "Simulation time = %.3f secs\n", $sim_end;
-printf "Avg node nconsumption = %.5f mJ\n", $avg_cons/(scalar keys %ncoords);
+printf "Avg node consumption = %.5f mJ\n", $avg_cons/(scalar keys %ncoords);
+printf "Min node consumption = %.5f mJ\n", $min_cons;
+printf "Max node consumption = %.5f mJ\n", $max_cons;
 print "Total number of transmissions = $total_trans\n";
 print "Total number of re-transmissions = $total_retrans\n";
 printf "Total number of unique transmissions = %d\n", $total_trans-$total_retrans;
 print "Total packets dropped = $dropped\n";
-printf "Packet Delivery Ratio = %.9f\n", $acked/($total_trans-$total_retrans);
+printf "Packet Delivery Ratio 1 = %.5f\n", $acked/($total_trans-$total_retrans); # ACKed PDR
+printf "Packet Delivery Ratio 2 = %.5f\n", ($total_trans-$total_retrans)/$total_trans; # Global PDR
 print "No GW available in RX1 = $no_rx1 times\n";
 print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
