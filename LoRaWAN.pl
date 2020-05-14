@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for confirmable LoRaWAN transmissions            #
-#                                 v2020.5.16                                      #
+#                                 v2020.5.17                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -11,11 +11,11 @@
 # -- Non-orthogonal SF transmissions                                              #
 # -- Capture effect                                                               #
 # -- Acks with two receive windows (RX1, RX2)                                     #
-# -- Path-loss signal attenuation model                                           #
+# -- Path-loss signal attenuation model (uplink+downlink)                         #
 #                                                                                 #
 # Assumptions (or work in progress):                                              #
 # -- All uplink transmissions are performed over the same channel                 #
-# -- Acks do not collide to each other                                            #
+# -- Acks do not collide with each other                                          #
 # -- SFs are fixed throughout the process (RSSI based)                            #
 #                                                                                 #
 # author: Dr. Dimitrios Zorbas                                                    #
@@ -40,6 +40,7 @@ my %ntransmissions = (); # current transmission
 my %nretransmisssions = (); # retransmisssions per node
 my %surpressed = ();
 my %nch = (); # selected channel
+my %nreachablegws = (); # reachable gws
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -236,23 +237,46 @@ while (1){
 			$gresponses{$sel_gw} += 1;
 			$gunavailability{$sel_gw} = [$ack_sta, $ack_end];
 			$gdc{$sel_gw} = $ack_end+airtime($nSF{$sel}, $overhead_d)*90;
-			$nretransmisssions{$sel} = 0;
-			$acked += 1;
-			$rwindow += 1;
-			$nconsumption{$sel} += airtime($nSF{$sel}, $overhead_d) * $Prx_w + airtime($nSF{$sel}, $overhead_d) * $Pidle_w;
+			# check if the ack reached the node
+			my $G = rand(1);
+			my $d = distance($gcoords{$sel_gw}[0], $ncoords{$sel}[0], $gcoords{$sel_gw}[1], $ncoords{$sel}[1]);
+			my $prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
+			if ($prx < $sensis[$nSF{$sel}-7][bwconv($bw)]){
+				print "# ack didn't reach the node\n" if ($debug == 1);
+				$nretransmisssions{$sel} += 1;
+				$nconsumption{$sel} += $preamble*(2**$nSF{$sel})/$bw * ($Prx_w + $Pidle_w);
+			}else{
+				$nretransmisssions{$sel} = 0;
+				$acked += 1;
+				$rwindow += 1;
+				$nconsumption{$sel} += airtime($nSF{$sel}, $overhead_d) * $Prx_w + airtime($nSF{$sel}, $overhead_d) * $Pidle_w;
+			}
 		}else{
-			# check RX2
+			# check RX2 (SF12 is used. If you change this, remember to change nreachablegws' in min_sf function as well)
 			$no_rx1 += 1;
 			my ($ack_sta, $ack_end) = ($sel_end+2, $sel_end+2+airtime(12, $overhead_d));
 			$max_p = -9999999999999;
-			foreach my $g (@gw_rc){
-				my ($gw, $p) = @$g;
-				my ($sta, $end) = @{$gunavailability{$gw}};
-				next if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) );
-				next if ($gdc{$gw} > ($sel_end+2));
-				if ($p > $max_p){
-					$sel_gw = $gw;
-					$max_p = $p;
+			if ($nSF{$sel} < 12){
+				foreach my $g (@{$nreachablegws{$sel}}){
+					my ($gw, $p) = @$g;
+					my ($sta, $end) = @{$gunavailability{$gw}};
+					next if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) );
+					next if ($gdc{$gw} > ($sel_end+2));
+					if ($p > $max_p){
+						$sel_gw = $gw;
+						$max_p = $p;
+					}
+				}
+			}else{
+				foreach my $g (@gw_rc){
+					my ($gw, $p) = @$g;
+					my ($sta, $end) = @{$gunavailability{$gw}};
+					next if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) );
+					next if ($gdc{$gw} > ($sel_end+2));
+					if ($p > $max_p){
+						$sel_gw = $gw;
+						$max_p = $p;
+					}
 				}
 			}
 			if (defined $sel_gw){
@@ -260,10 +284,20 @@ while (1){
 				$gresponses{$sel_gw} += 1;
 				$gunavailability{$sel_gw} = [$ack_sta, $ack_end];
 				$gdc{$sel_gw} = $ack_end+airtime(12, $overhead_d)*90;
-				$nretransmisssions{$sel} = 0;
-				$acked += 1;
-				$rwindow += 2;
-				$nconsumption{$sel} += airtime(12, $overhead_d) * $Prx_w + airtime(12, $overhead_d) * $Pidle_w;
+				# check if the ack reached the node
+				my $G = rand(1);
+				my $d = distance($gcoords{$sel_gw}[0], $ncoords{$sel}[0], $gcoords{$sel_gw}[1], $ncoords{$sel}[1]);
+				my $prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
+				if ($prx < $sensis[12-7][bwconv($bw)]){
+					print "# ack didn't reach the node\n" if ($debug == 1);
+					$nretransmisssions{$sel} += 1;
+					$nconsumption{$sel} += $preamble*(2**12)/$bw * ($Prx_w + $Pidle_w);
+				}else{
+					$nretransmisssions{$sel} = 0;
+					$acked += 1;
+					$rwindow += 2;
+					$nconsumption{$sel} += airtime(12, $overhead_d) * $Prx_w + airtime(12, $overhead_d) * $Pidle_w;
+				}
 			}else{
 				$no_rx2 += 1;
 				print "# no gateway is available\n" if ($debug == 1);
@@ -357,6 +391,12 @@ sub min_sf{
 				$f = 13;
 				last;
 			}
+		}
+		# check which gateways can reach the node with SF12
+		my $S = $sensis[5][$bwi];
+		my $Prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
+		if (($Prx - 10) > $S){ # 10dBm tolerance
+			push(@{$nreachablegws{$n}}, [$gw, $Prx]);
 		}
 	}
 	if ($sf == 0){
