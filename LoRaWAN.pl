@@ -12,11 +12,11 @@
 # -- Capture effect                                                               #
 # -- Acks with two receive windows (RX1, RX2)                                     #
 # -- Path-loss signal attenuation model (uplink+downlink)                         #
+# -- Multiple channels                                                            #
 #                                                                                 #
 # Assumptions (or work in progress):                                              #
-# -- All uplink transmissions are performed over the same channel                 #
-# -- Acks do not collide with each other                                          #
-# -- SFs are fixed throughout the process (RSSI based)                            #
+# -- Acks do not collide with other transmissions                                 #
+# -- ADR is under development                                                     #
 #                                                                                 #
 # author: Dr. Dimitrios Zorbas                                                    #
 # email: dimzorbas@ieee.org                                                       #
@@ -59,7 +59,8 @@ my $cr = 1; # Coding Rate
 my $Ptx_w = 76 * 3.3 / 1000; # mW
 my $Prx_w = 46 * 3.3 / 1000;
 my $Pidle_w = 30 * 3.3 / 1000; # this is actually the consumption of the microcontroller in idle mode
-my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels (not used yet)
+my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels
+my $rx2sf = 12; # SF used for RX2
 
 # packet specific parameters
 my @fpl = (51, 51, 51, 51, 51, 51); # uplink frame payload per SF (bytes)
@@ -164,7 +165,7 @@ while (1){
 		}
 		foreach my $n (keys %ntransmissions){
 			my ($sta, $end) = @{$ntransmissions{$n}};
-			next if (($n == $sel) || ($sta > $sel_end) || ($end < $sel_sta));
+			next if (($n == $sel) || ($sta > $sel_end) || ($end < $sel_sta) || ($nch{$sel} != $nch{$n}));
 			my $overlap = 0;
 			# time overlap
 			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
@@ -252,11 +253,11 @@ while (1){
 				$nconsumption{$sel} += airtime($nSF{$sel}, $overhead_d) * $Prx_w + airtime($nSF{$sel}, $overhead_d) * $Pidle_w;
 			}
 		}else{
-			# check RX2 (SF12 is used. If you change this, remember to change nreachablegws' in min_sf function as well)
+			# check RX2
 			$no_rx1 += 1;
 			my ($ack_sta, $ack_end) = ($sel_end+2, $sel_end+2+airtime(12, $overhead_d));
 			$max_p = -9999999999999;
-			if ($nSF{$sel} < 12){
+			if ($nSF{$sel} < $rx2sf){
 				foreach my $g (@{$nreachablegws{$sel}}){
 					my ($gw, $p) = @$g;
 					my ($sta, $end) = @{$gunavailability{$gw}};
@@ -392,8 +393,11 @@ sub min_sf{
 				last;
 			}
 		}
-		# check which gateways can reach the node with SF12
-		my $S = $sensis[5][$bwi];
+	}
+	# check which gateways can reach the node with rx2sf
+	foreach my $gw (keys %gcoords){
+		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
+		my $S = $sensis[$rx2sf-7][$bwi];
 		my $Prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
 		if (($Prx - 10) > $S){ # 10dBm tolerance
 			push(@{$nreachablegws{$n}}, [$gw, $Prx]);
@@ -464,6 +468,8 @@ sub read_data{
 	foreach my $node (@nodes){
 		my ($n, $x, $y) = @$node;
 		$ncoords{$n} = [$x, $y];
+		$nch{$n} = $channels[rand @channels];
+		print "$n picked channel $nch{$n}\n" if ($debug == 1);
 	}
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
