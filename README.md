@@ -9,6 +9,8 @@ A LoRaWAN simulator for confirmable transmissions and multiple gateways
 - Capture effect
 - Acks with two receive windows (RX1, RX2)
 - Path-loss signal attenuation model
+- Multiple channels
+- ADR (under development)
 
 ## Assumptions (or work in progress):
 - Acks do not collide with other transmissions
