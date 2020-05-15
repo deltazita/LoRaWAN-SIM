@@ -11,8 +11,7 @@ A LoRaWAN simulator for confirmable transmissions and multiple gateways
 - Path-loss signal attenuation model
 
 ## Assumptions (or work in progress):
-- All uplink transmissions are performed over the same channel
-- Acks do not collide to each other         
+- Acks do not collide with other transmissions
 
 ## Dependencies:
 - https://metacpan.org/pod/Math::Random
@@ -33,14 +32,17 @@ perl LoRaWAN.pl 1 12 10000 terrain.txt
 
 ### Output sample:  
 ```
-Simulation time = 10000 sec  
-Avg node consumption = 15.45559 J  
-Total number of transmissions = 3310  
-Total number of re-transmissions = 144  
-Total number of unique transmissions = 3166  
-Total packets dropped = 4  
-Packet Delivery Ratio = 0.997473152  
-No GW available in RX1 = 71 times  
-No GW available in RX1 or RX2 = 44 times  
-Script execution time = 0.9070 secs  
+Simulation time = 9995.851 secs
+Avg node consumption = 55.71215 mJ
+Min node consumption = 4.68841 mJ
+Max node consumption = 411.96288 mJ
+Total number of transmissions = 6657
+Total number of re-transmissions = 5738
+Total number of unique transmissions = 919
+Total packets dropped = 537
+Packet Delivery Ratio 1 = 0.22089
+Packet Delivery Ratio 2 = 0.13805
+No GW available in RX1 = 6381 times
+No GW available in RX1 or RX2 = 6306 times
+Script execution time = 0.9655 secs  
 ```
