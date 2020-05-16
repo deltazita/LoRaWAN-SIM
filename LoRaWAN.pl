@@ -7,10 +7,10 @@
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
 # -- 1% radio duty cycle for the nodes                                            #
-# -- 10% radio duty cycle for the gateways                                        #
+# -- 1 or 10% radio duty cycle for the gateways                                   #
+# -- Acks with two receive windows (RX1, RX2)                                     #
 # -- Non-orthogonal SF transmissions                                              #
 # -- Capture effect                                                               #
-# -- Acks with two receive windows (RX1, RX2)                                     #
 # -- Path-loss signal attenuation model (uplink+downlink)                         #
 # -- Multiple channels                                                            #
 #                                                                                 #
@@ -45,7 +45,7 @@ my %nreachablegws = (); # reachable gws
 # gw attributes
 my %gcoords = (); # gw coordinates
 my %gunavailability = (); # unavailable gw time due to downlink
-my %gdc = (); # gw duty cycle 
+my %gdc = (); # gw duty cycle (1% uplink channel is used for RX1, 10% downlink channel is used for RX2)
 my %gresponses = (); # acks carried out per gw (not used yet)
 
 # LoRa PHY and LoRaWAN parameters
@@ -60,7 +60,8 @@ my $Ptx_w = 76 * 3.3 / 1000; # mW
 my $Prx_w = 46 * 3.3 / 1000;
 my $Pidle_w = 30 * 3.3 / 1000; # this is actually the consumption of the microcontroller in idle mode
 my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels
-my $rx2sf = 12; # SF used for RX2
+my $rx2sf = 12; # SF used for RX2 (LoRaWAN default = SF12, TTN uses SF9)
+my $rx2ch = 869525000; # channel used for RX2 (LoRaWAN default = 869.525MHz, TTN uses the same)
 
 # packet specific parameters
 my @fpl = (51, 51, 51, 51, 51, 51); # uplink frame payload per SF (bytes)
@@ -227,7 +228,7 @@ while (1){
 			my ($gw, $p) = @$g;
 			my ($sta, $end) = @{$gunavailability{$gw}};
 			next if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) );
-			next if ($gdc{$gw} > ($sel_end+1));
+			next if ($gdc{$gw}{$nch{$sel}} > ($sel_end+1));
 			if ($p > $max_p){
 				$sel_gw = $gw;
 				$max_p = $p;
@@ -237,7 +238,7 @@ while (1){
 			print "# gw $sel_gw will transmit an ack to $sel\n" if ($debug == 1);
 			$gresponses{$sel_gw} += 1;
 			$gunavailability{$sel_gw} = [$ack_sta, $ack_end];
-			$gdc{$sel_gw} = $ack_end+airtime($nSF{$sel}, $overhead_d)*90;
+			$gdc{$sel_gw}{$nch{$sel}} = $ack_end+airtime($nSF{$sel}, $overhead_d)*99;
 			# check if the ack reached the node
 			my $G = rand(1);
 			my $d = distance($gcoords{$sel_gw}[0], $ncoords{$sel}[0], $gcoords{$sel_gw}[1], $ncoords{$sel}[1]);
@@ -259,10 +260,10 @@ while (1){
 			$max_p = -9999999999999;
 			if ($nSF{$sel} < $rx2sf){
 				foreach my $g (@{$nreachablegws{$sel}}){
-					my ($gw, $p) = @$g;
+					my ($gw, $p, $ch) = @$g;
 					my ($sta, $end) = @{$gunavailability{$gw}};
 					next if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) );
-					next if ($gdc{$gw} > ($sel_end+2));
+					next if ($gdc{$gw}{$rx2ch} > ($sel_end+2));
 					if ($p > $max_p){
 						$sel_gw = $gw;
 						$max_p = $p;
@@ -273,7 +274,7 @@ while (1){
 					my ($gw, $p) = @$g;
 					my ($sta, $end) = @{$gunavailability{$gw}};
 					next if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) );
-					next if ($gdc{$gw} > ($sel_end+2));
+					next if ($gdc{$gw}{$rx2ch} > ($sel_end+2));
 					if ($p > $max_p){
 						$sel_gw = $gw;
 						$max_p = $p;
@@ -284,7 +285,7 @@ while (1){
 				print "# gw $sel_gw will transmit an ack to $sel\n" if ($debug == 1);
 				$gresponses{$sel_gw} += 1;
 				$gunavailability{$sel_gw} = [$ack_sta, $ack_end];
-				$gdc{$sel_gw} = $ack_end+airtime(12, $overhead_d)*90;
+				$gdc{$sel_gw}{$rx2ch} = $ack_end+airtime(12, $overhead_d)*90;
 				# check if the ack reached the node
 				my $G = rand(1);
 				my $d = distance($gcoords{$sel_gw}[0], $ncoords{$sel}[0], $gcoords{$sel_gw}[1], $ncoords{$sel}[1]);
@@ -475,7 +476,10 @@ sub read_data{
 		my ($g, $x, $y) = @$gw;
 		$gcoords{$g} = [$x, $y];
 		$gunavailability{$g} = [-1, -1];
-		$gdc{$g} = 0;
+		foreach my $ch (@channels){
+			$gdc{$g}{$ch} = 0;
+		}
+		$gdc{$g}{$rx2ch} = 0;
 		foreach my $n (keys %ncoords){
 			$surpressed{$n}{$g} = 0;
 		}

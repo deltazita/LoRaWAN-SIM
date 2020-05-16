@@ -3,13 +3,14 @@ A LoRaWAN simulator for confirmable transmissions and multiple gateways
 
 ## Features:
 - Multiple half-duplex gateways
-- 1% radio duty cycle for the nodes
-- 10% radio duty cycle for the gateways
+- 1% radio duty cycle for uplink transmissions
+- 1 or 10% radio duty cycle for downlink transmissions
+- Two receive windows (RX1, RX2) for ACKs and commands
 - Non-orthogonal SF transmissions
 - Capture effect
-- Acks with two receive windows (RX1, RX2)
 - Path-loss signal attenuation model
 - Multiple channels
+- Proper header overhead
 - ADR (under development)
 
 ## Assumptions (or work in progress):
