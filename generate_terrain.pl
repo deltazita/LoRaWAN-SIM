@@ -52,11 +52,11 @@ foreach my $s (@sensors){
 }
 print "\n";
 print "# gateway coords:";
-$n = 1;
+my $l = "A";
 foreach my $g (@gws){
 	my ($x, $y) = @$g;
-	printf " %s [%.1f %.1f]", $n, $x, $y;
-	$n++;
+	printf " %s [%.1f %.1f]", $l, $x, $y;
+	$l++;
 }
 print "\n";
 

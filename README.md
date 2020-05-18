@@ -1,5 +1,5 @@
 # LoRaWAN-SIM
-A LoRaWAN simulator for confirmable transmissions and multiple gateways
+A LoRaWAN simulator for confirmed transmissions and multiple gateways
 
 ## Features:
 - Multiple half-duplex gateways
@@ -10,16 +10,15 @@ A LoRaWAN simulator for confirmable transmissions and multiple gateways
 - Capture effect
 - Path-loss signal attenuation model
 - Multiple channels
+- Collision handling for both uplink+downlink transmissions
 - Proper header overhead
+- Node energy consumption calculation (uplink+downlink)
 - ADR (under development)
-
-## Assumptions (or work in progress):
-- Acks do not collide with other transmissions
 
 ## Dependencies:
 - https://metacpan.org/pod/Math::Random
 - https://metacpan.org/pod/Term::ProgressBar
-- https://metacpan.org/pod/GD::SVG (optional for draw_terrain script)
+- https://metacpan.org/pod/GD::SVG
 
 ## Usage:
 ```
@@ -35,17 +34,24 @@ perl LoRaWAN.pl 1 12 10000 terrain.txt
 
 ### Output sample:  
 ```
-Simulation time = 9995.851 secs
-Avg node consumption = 55.71215 mJ
-Min node consumption = 4.68841 mJ
-Max node consumption = 411.96288 mJ
-Total number of transmissions = 6657
-Total number of re-transmissions = 5738
-Total number of unique transmissions = 919
-Total packets dropped = 537
-Packet Delivery Ratio 1 = 0.22089
-Packet Delivery Ratio 2 = 0.13805
-No GW available in RX1 = 6381 times
-No GW available in RX1 or RX2 = 6306 times
-Script execution time = 0.9655 secs  
+Simulation time = 10000.130 secs
+Avg node consumption = 4.22738 mJ
+Min node consumption = 0.14028 mJ
+Max node consumption = 24.44699 mJ
+Total number of transmissions = 7425
+Total number of re-transmissions = 1457
+Total number of unique transmissions = 5968
+Total packets acknowledged = 5578
+Total packets dropped = 1
+Packet Delivery Ratio 1 = 0.93465
+Packet Delivery Ratio 2 = 0.80377
+No GW available in RX1 = 112 times
+No GW available in RX1 or RX2 = 21 times
+Script execution time = 34.3681 secs
+-----
+GW A sent out 1731 acks
+GW B sent out 722 acks
+GW C sent out 1129 acks
+GW D sent out 1340 acks
+GW E sent out 666 acks
 ```
