@@ -98,7 +98,7 @@ my $total_retrans = 0; # number of re-transm packets
 my $acked = 0; # number of acknowledged packets
 my $no_rx1 = 0; # no gw was available in RX1
 my $no_rx2 = 0; # no gw was available in RX1 or RX2
-my $picture = 1; # generate an energy consumption map
+my $picture = 0; # generate an energy consumption map
 
 my $progress = Term::ProgressBar->new({
 	name  => 'Progress',
@@ -284,9 +284,20 @@ while (1){
 	}else{ # if the packet is a gw transmission
 		
 		
-		# check if it collides with other transmissions
 		delete $transmissions{$sel}; # delete the old transmission
 		$sel =~ s/[0-9].*//; # keep only the letter(s)
+		# reduce gunavailability population
+		my @indices = ();
+		my $index = 0;
+		foreach my $tuple (@{$gunavailability{$sel}}){
+			my ($sta, $end) = @$tuple;
+			push (@indices, $index) if ($end < $sel_sta);
+		}
+		for (sort {$b<=>$a} @indices){
+			splice @{$gunavailability{$sel}}, $_, 1;
+		}
+		
+		# check if it collides with other transmissions
 		shift(@{$gunavailability{$sel}});
 		shift(@{$gunavailability{$sel}});
 		my $failed = 0;
@@ -524,7 +535,7 @@ sub node_col{
 					}
 				}
 			}else{ # n is a gw in this case
-				my ($sta, $end) = @{$transmissions{$n}};
+				my ($sta, $end) = @{$transmissions{$n}};					
 				my $nn = $n;
 				$n =~ s/[0-9].*//; # keep only the letter(s)
 				next if (($nn eq $gw) || ($sta > $sel_end) || ($end < $sel_sta) || ($gdest{$n}[3] != $nch{$sel}));
