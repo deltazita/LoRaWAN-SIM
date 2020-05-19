@@ -119,7 +119,7 @@ foreach my $n (keys %ncoords){
 foreach my $n (keys %ncoords){
 	my $start = random_uniform(1, 0, $period); # transmissions are periodic
 	my $stop = $start + airtime($nSF{$n});
-	print "# $n will transmit from $start to $stop\n" if ($debug == 1);
+	# print "# $n will transmit from $start to $stop\n" if ($debug == 1);
 	$transmissions{$n} = [$start, $stop];
 	$nconsumption{$n} += airtime($nSF{$n}) * $Ptx_w + (airtime($nSF{$n})+1) * $Pidle_w; # +1sec for sensing
 	$total_trans += 1;
@@ -155,7 +155,7 @@ while (1){
 		my $rwindow = 0;
 		my $failed = 0;
 		if (scalar @$gw_rc > 0){ # if at least one gateway received the pkt -> successful transmission
-			printf "# $sel 's transmission received by %d gateway(s)\n", scalar @$gw_rc if ($debug == 1);
+			printf "# $sel 's transmission received by %d gateway(s) (channel $nch{$sel})\n", scalar @$gw_rc if ($debug == 1);
 			# now we have to find which gateway (if any) can transmit an ack
 			# check which gw can send an ack (RX1)
 			my $max_p = -9999999999999;
@@ -166,10 +166,12 @@ while (1){
 				next if ($gdc{$gw}{$nch{$sel}} > ($sel_end+1));
 				my $is_available = 1;
 				foreach my $gu (@{$gunavailability{$gw}}){
-					my ($sta, $end) = @$gu;
-					if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
-						$is_available = 0;
-						last;
+					my ($sta, $end, $ch) = @$gu;
+					if ($ch == 0){ # check if the gw is in downlink mode
+						if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
+							$is_available = 0;
+							last;
+						}
 					}
 				}
 				next if ($is_available == 0);
@@ -182,7 +184,7 @@ while (1){
 				$rwindow = 1;
 				print "# gw $sel_gw will transmit an ack to $sel (RX$rwindow) (channel $nch{$sel})\n" if ($debug == 1);
 				$gresponses{$sel_gw} += 1;
-				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end]);
+				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, 0]); # "0" denotes downlink transmission
 				$gdc{$sel_gw}{$nch{$sel}} = $ack_end+airtime($nSF{$sel}, $overhead_d)*99;
 				my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
 				$transmissions{$new_name} = [$ack_sta, $ack_end];
@@ -198,10 +200,12 @@ while (1){
 						next if ($gdc{$gw}{$rx2ch} > ($sel_end+2));
 						my $is_available = 1;
 						foreach my $gu (@{$gunavailability{$gw}}){
-							my ($sta, $end) = @$gu;
-							if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
-								$is_available = 0;
-								last;
+							my ($sta, $end, $ch) = @$gu;
+							if ($ch == 0){
+								if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
+									$is_available = 0;
+									last;
+								}
 							}
 						}
 						next if ($is_available == 0);
@@ -216,10 +220,12 @@ while (1){
 						next if ($gdc{$gw}{$rx2ch} > ($sel_end+2));
 						my $is_available = 1;
 						foreach my $gu (@{$gunavailability{$gw}}){
-							my ($sta, $end) = @$gu;
-							if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
-								$is_available = 0;
-								last;
+							my ($sta, $end, $ch) = @$gu;
+							if ($ch == 0){
+								if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
+									$is_available = 0;
+									last;
+								}
 							}
 						}
 						next if ($is_available == 0);
@@ -231,9 +237,9 @@ while (1){
 				}
 				if (defined $sel_gw){
 					$rwindow = 2;
-					print "# gw $sel_gw will transmit an ack to $sel (RX$rwindow) (channel $nch{$sel})\n" if ($debug == 1);
+					print "# gw $sel_gw will transmit an ack to $sel (RX$rwindow) (channel $rx2ch)\n" if ($debug == 1);
 					$gresponses{$sel_gw} += 1;
-					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end]);
+					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, 0]);
 					$gdc{$sel_gw}{$rx2ch} = $ack_end+airtime($rx2sf, $overhead_d)*90;
 					my $new_name = $sel_gw.$gresponses{$sel_gw};
 					$transmissions{$new_name} = [$ack_sta, $ack_end];
@@ -290,7 +296,7 @@ while (1){
 		my @indices = ();
 		my $index = 0;
 		foreach my $tuple (@{$gunavailability{$sel}}){
-			my ($sta, $end) = @$tuple;
+			my ($sta, $end, $ch) = @$tuple;
 			push (@indices, $index) if ($end < $sel_sta);
 		}
 		for (sort {$b<=>$a} @indices){
@@ -298,8 +304,6 @@ while (1){
 		}
 		
 		# check if it collides with other transmissions
-		shift(@{$gunavailability{$sel}});
-		shift(@{$gunavailability{$sel}});
 		my $failed = 0;
 		my ($dest, $sf, $rwindow, $ch) = @{$gdest{$sel}};
 		# first check if the transmission can reach the node
@@ -475,15 +479,17 @@ sub node_col{
 		}
 		my $is_available = 1;
 		foreach my $gu (@{$gunavailability{$gw}}){
-			my ($sta, $end) = @$gu;
+			my ($sta, $end, $ch) = @$gu;
 			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
-				$is_available = 0;
-				last;
+				if ($nch{$sel} == $ch){
+					$is_available = 0;
+					last;
+				}
 			}
 		}
 		if ($is_available == 0){
 			$surpressed{$sel}{$gw} = 1;
-			print "# gw not available for uplink\n" if ($debug == 1);
+			print "# gw not available for uplink (channel $nch{$sel})\n" if ($debug == 1);
 			next;
 		}
 		foreach my $n (keys %transmissions){
@@ -605,7 +611,7 @@ sub node_col{
 			push (@gw_rc, [$gw, $prx]);
 			# set the gw unavailable (exclude preamble)
 			my $pr_time = 2**$nSF{$sel}/$bw;
-			push(@{$gunavailability{$gw}}, [$sel_sta+$pr_time, $sel_end]);
+			push(@{$gunavailability{$gw}}, [$sel_sta+$pr_time, $sel_end, $nch{$sel}]);
 		}
 	}
 	@{$overlaps{$sel}} = ();
@@ -644,7 +650,7 @@ sub min_sf{
 		print "terrain too large?\n";
 		exit;
 	}
-	print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
+	# print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
 	return $sf;
 }
 
@@ -654,7 +660,7 @@ sub airtime{
 	my $DE = 0;      # low data rate optimization enabled (=1) or not (=0)
 	my $payload = shift;
 	$payload = $pl_u[$sf-7] if (!defined $payload);
-	if (($bw == 125) && (($sf == 11) || ($sf == 12))){
+	if (($bw == 125000) && (($sf == 11) || ($sf == 12))){
 		# low data rate optimization mandated for BW125 with SF11 and SF12
 		$DE = 1;
 	}
@@ -707,7 +713,7 @@ sub read_data{
 		my ($n, $x, $y) = @$node;
 		$ncoords{$n} = [$x, $y];
 		$nch{$n} = $channels[rand @channels];
-		print "$n picked channel $nch{$n}\n" if ($debug == 1);
+		# print "$n picked channel $nch{$n}\n" if ($debug == 1);
 		@{$overlaps{$n}} = ();
 	}
 	foreach my $gw (@gateways){
