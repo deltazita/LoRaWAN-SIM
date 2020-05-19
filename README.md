@@ -13,7 +13,7 @@ A LoRaWAN simulator for confirmed transmissions and multiple gateways
 - Collision handling for both uplink+downlink transmissions
 - Proper header overhead
 - Node energy consumption calculation (uplink+downlink)
-- ADR (under development)
+- ADR (Tx power adjustment)
 
 ## Dependencies:
 - https://metacpan.org/pod/Math::Random

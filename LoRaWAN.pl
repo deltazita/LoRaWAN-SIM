@@ -26,7 +26,7 @@
 
 use strict;
 use POSIX;
-use List::Util qw(min max);
+use List::Util qw(min max sum);
 use Time::HiRes qw(time);
 use Math::Random qw(random_uniform random_exponential);
 use Term::ProgressBar 2.00;
@@ -42,6 +42,8 @@ my %nretransmisssions = (); # retransmisssions per node
 my %surpressed = ();
 my %nch = (); # selected channel
 my %nreachablegws = (); # reachable gws
+my %nptx = (); # transmit power index
+my %nresponse = (); # 0/1 (1 = ADR response will be sent)
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -54,11 +56,12 @@ my %gdest = (); # contains downlink information [node, sf, RX1/2, channel]
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW
 my @thresholds = ([6,-16,-18,-19,-19,-20], [-24,6,-20,-22,-22,-22], [-27,-27,6,-23,-25,-25], [-30,-30,-30,6,-26,-28], [-33,-33,-33,-33,6,-29], [-36,-36,-36,-36,-36,6]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
 my $var = 3.57; # variance
-my ($dref, $Ptx, $Lpld0, $gamma) = (40, 14, 95, 2.08); # attenuation model parameters
+my ($dref, $Lpld0, $gamma) = (40, 95, 2.08); # attenuation model parameters
 my $max_retr = 8; # max number of retransmisssions per packet
 my $bw = 125000; # channel bandwidth
 my $cr = 1; # Coding Rate
-my $Ptx_w = 76 * 3.3 / 1000; # mW
+my @Ptx_l = (2, 7, 14); # dBm
+my @Ptx_w = (12 * 3.3 / 1000, 30 * 3.3 / 1000, 76 * 3.3 / 1000); # Ptx cons. for 2, 7, 14dBm (mW)
 my $Prx_w = 46 * 3.3 / 1000;
 my $Pidle_w = 30 * 3.3 / 1000; # this is actually the consumption of the microcontroller in idle mode
 my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels
@@ -121,7 +124,7 @@ foreach my $n (keys %ncoords){
 	my $stop = $start + airtime($nSF{$n});
 	# print "# $n will transmit from $start to $stop\n" if ($debug == 1);
 	$transmissions{$n} = [$start, $stop];
-	$nconsumption{$n} += airtime($nSF{$n}) * $Ptx_w + (airtime($nSF{$n})+1) * $Pidle_w; # +1sec for sensing
+	$nconsumption{$n} += airtime($nSF{$n}) * $Ptx_w[$nptx{$n}] + (airtime($nSF{$n})+1) * $Pidle_w; # +1sec for sensing
 	$total_trans += 1;
 }
 
@@ -188,7 +191,7 @@ while (1){
 				$gdc{$sel_gw}{$nch{$sel}} = $ack_end+airtime($nSF{$sel}, $overhead_d)*99;
 				my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
 				$transmissions{$new_name} = [$ack_sta, $ack_end];
-				$gdest{$sel_gw} = [$sel, $nSF{$sel}, $rwindow, $nch{$sel}];
+				$gdest{$sel_gw} = [$sel, $nSF{$sel}, $rwindow, $nch{$sel}, -1];
 			}else{
 				# check RX2
 				$no_rx1 += 1;
@@ -243,11 +246,26 @@ while (1){
 					$gdc{$sel_gw}{$rx2ch} = $ack_end+airtime($rx2sf, $overhead_d)*90;
 					my $new_name = $sel_gw.$gresponses{$sel_gw};
 					$transmissions{$new_name} = [$ack_sta, $ack_end];
-					$gdest{$sel_gw} = [$sel, $rx2sf, $rwindow, $rx2ch];
+					$gdest{$sel_gw} = [$sel, $rx2sf, $rwindow, $rx2ch, -1];
 				}else{
 					$no_rx2 += 1;
 					print "# no gateway is available\n" if ($debug == 1);
 					$failed = 1;
+				}
+			}
+			if (defined $sel_gw){ # ADR
+				# the SF is already adjusted in min_sf; here only the transmit power is adjusted
+				my $gap = $max_p - $sensis[$nSF{$sel}-7][bwconv($bw)];
+				my $new_ptx = undef;
+				foreach my $p (@Ptx_l){
+					next if ($p >= $Ptx_l[$nptx{$sel}]);
+					if ($gap-$p >= 10){
+						$new_ptx = $p;
+						last;
+					}
+				}
+				if (defined $new_ptx){
+					$gdest{$sel_gw}[4] = $new_ptx;
 				}
 			}
 		}else{ # non-successful transmission
@@ -278,7 +296,7 @@ while (1){
 			$total_trans += 1 if ($sel_sta+5 < $sim_time); # do not count transmissions that exceed the simulation time
 			$total_retrans += 1 if ($sel_sta+5 < $sim_time);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w + (airtime($nSF{$sel})+1) * $Pidle_w if ($sel_sta+5 < $sim_time);
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($nSF{$sel})+1) * $Pidle_w if ($sel_sta+5 < $sim_time);
 		}else{
 			# this case will be handled during the ack transmission
 		}
@@ -305,11 +323,11 @@ while (1){
 		
 		# check if it collides with other transmissions
 		my $failed = 0;
-		my ($dest, $sf, $rwindow, $ch) = @{$gdest{$sel}};
+		my ($dest, $sf, $rwindow, $ch, $p) = @{$gdest{$sel}};
 		# first check if the transmission can reach the node
 		my $G = rand(1);
 		my $d = distance($gcoords{$sel}[0], $ncoords{$dest}[0], $gcoords{$sel}[1], $ncoords{$dest}[1]);
-		my $prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
+		my $prx = 14 - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
 		if ($prx < $sensis[$sf-7][bwconv($bw)]){
 			print "# ack didn't reach node $dest\n" if ($debug == 1);
 			$failed = 1;
@@ -356,12 +374,15 @@ while (1){
 			}
 			# power 
 			my $d_ = 0;
+			my $p = 0;
 			if ($n =~ /^[0-9]/){
 				$d_ = distance($ncoords{$dest}[0], $ncoords{$n}[0], $ncoords{$dest}[1], $ncoords{$n}[1]);
+				$p = $Ptx_l[$nptx{$n}];
 			}else{
 				$d_ = distance($ncoords{$dest}[0], $gcoords{$n}[0], $ncoords{$dest}[1], $gcoords{$n}[1]);
+				$p = 14;
 			}
-			my $prx_ = $Ptx - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
+			my $prx_ = $p - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
 			if ($overlap == 3){
 				if ((abs($prx - $prx_) <= $thresholds[$sf-7][$sf_-7]) ){ # both collide
 					$failed = 1;
@@ -395,10 +416,17 @@ while (1){
 			print "# ack successfully received, $dest 's transmission has been acked\n" if ($debug == 1);
 			$nretransmisssions{$dest} = 0;
 			$acked += 1;
-			$nconsumption{$dest} += airtime($sf, $overhead_d) * ($Prx_w + $Pidle_w);
 			if ($rwindow == 2){ # also count the RX1 window
 				$nconsumption{$dest} += $preamble*(2**$nSF{$dest})/$bw * ($Prx_w + $Pidle_w);
 			}
+			my $extra_bytes = 0; # if an ADR request is included in the downlink packet
+			if ($gdest{$sel}[4] != -1){
+				$nptx{$dest} = $gdest{$sel}[4];
+				$extra_bytes = $adr;
+				$nresponse{$dest} = 1;
+				print "# transmit power of $dest is set to $gdest{$sel}[4]\n" if ($debug == 1);
+			}
+			$nconsumption{$dest} += airtime($sf, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
 		}else{ # ack was not received
 			if ($nretransmisssions{$dest} < $max_retr){
 				$nretransmisssions{$dest} += 1;
@@ -412,7 +440,12 @@ while (1){
 		}
 		@{$overlaps{$sel}} = ();
 		# plan next transmission
-		my $at = airtime($nSF{$dest});
+		my $extra_bytes = 0;
+		if ($nresponse{$dest} == 1){
+			$extra_bytes = $adr;
+			$nresponse{$dest} = 0;
+		}
+		my $at = airtime($nSF{$dest}, $pl_u[$nSF{$dest}-7]+$extra_bytes);
 		my $new_start = $sel_sta - $rwindow + $period + rand(1);
 		my $next_allowed = $sel_sta - $rwindow + 99*$at;
 		if ($new_start < $next_allowed){
@@ -424,26 +457,17 @@ while (1){
 		$total_trans += 1 if ($new_start+5 < $sim_time); # do not count transmissions that exceed the simulation time
 		$total_retrans += 1 if (($failed == 1) && ($new_start+5 < $sim_time)); 
 		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
-		$nconsumption{$dest} += $at * $Ptx_w + (airtime($nSF{$dest})+1) * $Pidle_w if ($new_start+5 < $sim_time);
+		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($nSF{$dest})+1) * $Pidle_w if ($new_start+5 < $sim_time);
 	}
 }
 # print "---------------------\n";
 
-my $avg_cons = 0;
-my $min_cons = 99999999999999999999;
-my $max_cons = 0;
-foreach my $n (keys %ncoords){
-	$avg_cons += $nconsumption{$n};
-	if ($nconsumption{$n} < $min_cons){
-		$min_cons = $nconsumption{$n};
-	}
-	if ($nconsumption{$n} > $max_cons){
-		$max_cons = $nconsumption{$n};
-	}
-}
+my $avg_cons = (sum values %nconsumption)/(scalar keys %nconsumption);
+my $min_cons = min values %nconsumption;
+my $max_cons = max values %nconsumption;
 my $finish_time = time;
 printf "Simulation time = %.3f secs\n", $sim_end;
-printf "Avg node consumption = %.5f mJ\n", $avg_cons/(scalar keys %ncoords);
+printf "Avg node consumption = %.5f mJ\n", $avg_cons;
 printf "Min node consumption = %.5f mJ\n", $min_cons;
 printf "Max node consumption = %.5f mJ\n", $max_cons;
 print "Total number of transmissions = $total_trans\n";
@@ -471,7 +495,7 @@ sub node_col{
 		next if ($surpressed{$sel}{$gw} == 1);
 		my $d = distance($gcoords{$gw}[0], $ncoords{$sel}[0], $gcoords{$gw}[1], $ncoords{$sel}[1]);
 		my $G = rand(1);
-		my $prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
+		my $prx = $Ptx_l[$nptx{$sel}] - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
 		if ($prx < $sensis[$nSF{$sel}-7][bwconv($bw)]){
 			$surpressed{$sel}{$gw} = 1;
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
@@ -507,7 +531,7 @@ sub node_col{
 				}
 				# power 
 				my $d_ = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
-				my $prx_ = $Ptx - ($Lpld0 + 10*$gamma * log10($d_/$dref) + rand(1)*$var);
+				my $prx_ = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d_/$dref) + rand(1)*$var);
 				if ($overlap == 3){
 					if ((abs($prx - $prx_) <= $thresholds[$nSF{$sel}-7][$nSF{$n}-7]) ){ # both collide
 						$surpressed{$sel}{$gw} = 1;
@@ -575,7 +599,7 @@ sub node_col{
 					}
 					# power 
 					my $d_ = distance($gcoords{$gw}[0], $gcoords{$n}[0], $gcoords{$gw}[1], $gcoords{$n}[1]);
-					my $prx_ = $Ptx - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
+					my $prx_ = 14 - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
 					if ($overlap == 3){
 						if ((abs($prx - $prx_) <= $thresholds[$nSF{$sel}-7][$sf_-7]) ){ # both collide
 							$surpressed{$sel}{$gw} = 1;
@@ -621,14 +645,14 @@ sub node_col{
 sub min_sf{
 	my $n = shift;
 	my $G = rand(1);
-	my ($dref, $Ptx, $Lpld0, $Xs, $gamma) = (40, 7, 95, $var*$G, 2.08);
+	my ($dref, $Lpld0, $Xs, $gamma) = (40, 95, $var*$G, 2.08);
 	my $sf = 0;
 	my $bwi = bwconv($bw);
 	foreach my $gw (keys %gcoords){
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
 		for (my $f=7; $f<=12; $f+=1){
 			my $S = $sensis[$f-7][$bwi];
-			my $Prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
+			my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
 			if (($Prx - 10) > $S){ # 10dBm tolerance
 				$sf = $f;
 				$f = 13;
@@ -636,11 +660,11 @@ sub min_sf{
 			}
 		}
 	}
-	# check which gateways can reach the node with rx2sf
+	# check which gateways can be reached with rx2sf
 	foreach my $gw (keys %gcoords){
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
 		my $S = $sensis[$rx2sf-7][$bwi];
-		my $Prx = $Ptx - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
+		my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
 		if (($Prx - 10) > $S){ # 10dBm tolerance
 			push(@{$nreachablegws{$n}}, [$gw, $Prx]);
 		}
@@ -715,6 +739,8 @@ sub read_data{
 		$nch{$n} = $channels[rand @channels];
 		# print "$n picked channel $nch{$n}\n" if ($debug == 1);
 		@{$overlaps{$n}} = ();
+		$nptx{$n} = scalar @Ptx_l - 1; # start with the highest Ptx
+		$nresponse{$n} = 0;
 	}
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
