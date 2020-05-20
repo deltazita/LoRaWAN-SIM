@@ -45,7 +45,7 @@ my %nresponse = (); # 0/1 (1 = ADR response will be sent)
 
 # gw attributes
 my %gcoords = (); # gw coordinates
-my %gunavailability = (); # unavailable gw time due to downlink
+my %gunavailability = (); # unavailable gw time due to downlink or locked to another transmission
 my %gdc = (); # gw duty cycle (1% uplink channel is used for RX1, 10% downlink channel is used for RX2)
 my %gresponses = (); # acks carried out per gw (not used yet)
 my %gdest = (); # contains downlink information [node, sf, RX1/2, channel]
@@ -155,6 +155,7 @@ while (1){
 			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
 			# now we have to find which gateway (if any) can transmit an ack
 			# check which gw can send an ack (RX1)
+			# we check if the gw is in downlink mode
 			my $max_p = -9999999999999;
 			my $sel_gw = undef;
 			my ($ack_sta, $ack_end) = ($sel_end+1, $sel_end+1+airtime($sel_sf, $overhead_d));
@@ -163,8 +164,8 @@ while (1){
 				next if ($gdc{$gw}{$sel_ch} > ($sel_end+1));
 				my $is_available = 1;
 				foreach my $gu (@{$gunavailability{$gw}}){
-					my ($sta, $end, $ch) = @$gu;
-					if ($ch == 0){ # check if the gw is in downlink mode
+					my ($sta, $end, $ch, $sf) = @$gu;
+					if ($ch == $rx2ch){ # check if the gw is in downlink mode
 						if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
 							$is_available = 0;
 							last;
@@ -181,7 +182,7 @@ while (1){
 				$rwindow = 1;
 				print "# gw $sel_gw will transmit an ack to $sel (RX$rwindow) (channel $sel_ch)\n" if ($debug == 1);
 				$gresponses{$sel_gw} += 1;
-				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, 0]); # "0" denotes downlink transmission
+				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf]);
 				$gdc{$sel_gw}{$sel_ch} = $ack_end+airtime($sel_sf, $overhead_d)*99;
 				my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
 				$transmissions{$new_name} = [$ack_sta, $ack_end, $sel_ch, $sel_sf];
@@ -197,8 +198,8 @@ while (1){
 						next if ($gdc{$gw}{$rx2ch} > ($sel_end+2));
 						my $is_available = 1;
 						foreach my $gu (@{$gunavailability{$gw}}){
-							my ($sta, $end, $ch) = @$gu;
-							if ($ch == 0){
+							my ($sta, $end, $ch, $sf) = @$gu;
+							if ($ch == $rx2ch){
 								if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
 									$is_available = 0;
 									last;
@@ -217,8 +218,8 @@ while (1){
 						next if ($gdc{$gw}{$rx2ch} > ($sel_end+2));
 						my $is_available = 1;
 						foreach my $gu (@{$gunavailability{$gw}}){
-							my ($sta, $end, $ch) = @$gu;
-							if ($ch == 0){
+							my ($sta, $end, $ch, $sf) = @$gu;
+							if ($ch == $rx2ch){
 								if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
 									$is_available = 0;
 									last;
@@ -236,7 +237,7 @@ while (1){
 					$rwindow = 2;
 					print "# gw $sel_gw will transmit an ack to $sel (RX$rwindow) (channel $rx2ch)\n" if ($debug == 1);
 					$gresponses{$sel_gw} += 1;
-					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, 0]);
+					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $rx2ch, $rx2sf]);
 					$gdc{$sel_gw}{$rx2ch} = $ack_end+airtime($rx2sf, $overhead_d)*90;
 					my $new_name = $sel_gw.$gresponses{$sel_gw};
 					$transmissions{$new_name} = [$ack_sta, $ack_end, $rx2ch, $rx2sf];
@@ -267,7 +268,7 @@ while (1){
 						$new_index += 1;
 					}
 					$gdest{$sel_gw}[-1][5] = $new_index;
-					print "# it will suggested that $sel changes tx power to $Ptx_l[$new_index]\n" if ($debug == 1);
+					print "# it will be suggested that $sel changes tx power to $Ptx_l[$new_index]\n" if ($debug == 1);
 				}
 			}
 		}else{ # non-successful transmission
@@ -285,14 +286,9 @@ while (1){
 			# the node stays on only for the duration of the preamble for both windows
 			$nconsumption{$sel} += $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
 			$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
-			# plan the next transmission 
+			# plan the next transmission as soon as the duty cycle permits that
 			my $at = airtime($sel_sf);
-			$sel_sta = $sel_end + $rwindow + $period + rand(1);
-			my $next_allowed = $sel_end + 99*$at;
-			if ($sel_sta < $next_allowed){
-				print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-				$sel_sta = $next_allowed;
-			}
+			$sel_sta = $sel_end + 99*$at;
 			$sel_end = $sel_sta+$at;
 			$transmissions{$sel} = [$sel_sta, $sel_end, $sel_ch, $sel_sf];
 			$total_trans += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time
@@ -316,7 +312,7 @@ while (1){
 		my @indices = ();
 		my $index = 0;
 		foreach my $tuple (@{$gunavailability{$sel}}){
-			my ($sta, $end, $ch) = @$tuple;
+			my ($sta, $end, $ch, $sf) = @$tuple;
 			push (@indices, $index) if ($end < $sel_sta);
 			$index += 1;
 		}
@@ -455,6 +451,7 @@ while (1){
 			print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
 			$new_start = $next_allowed;
 		}
+		$new_start = $next_allowed if ($failed == 1);
 		my $new_end = $new_start + $at;
 		$transmissions{$dest} = [$new_start, $new_end, $ch, $sf];
 		$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
@@ -478,8 +475,8 @@ print "Total number of re-transmissions = $total_retrans\n";
 printf "Total number of unique transmissions = %d\n", $total_trans-$total_retrans;
 print "Total packets acknowledged = $acked\n";
 print "Total packets dropped = $dropped\n";
-printf "Packet Delivery Ratio 1 = %.5f\n", $acked/($total_trans-$total_retrans); # ACKed PDR
-printf "Packet Delivery Ratio 2 = %.5f\n", ($total_trans-$total_retrans)/$total_trans; # Global PDR
+printf "Packet Delivery Ratio = %.5f\n", $acked/($total_trans-$total_retrans); # ACKed PDR
+printf "Packet Reception Rate = %.5f\n", ($total_trans-$total_retrans)/$total_trans; # Global PRR
 print "No GW available in RX1 = $no_rx1 times\n";
 print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
@@ -504,11 +501,13 @@ sub node_col{
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
 			next;
 		}
+		# check if the gw is available for uplink
 		my $is_available = 1;
 		foreach my $gu (@{$gunavailability{$gw}}){
-			my ($sta, $end, $ch) = @$gu;
+			my ($sta, $end, $ch, $sf) = @$gu;
 			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
-				if ($sel_ch == $ch){
+				# the gw has either locked to another transmission with the same ch/sf OR is being used for downlink
+				if ( (($sel_ch == $ch) && ($sel_sf == $sf)) || ($ch == $rx2ch) ){
 					$is_available = 0;
 					last;
 				}
@@ -516,7 +515,7 @@ sub node_col{
 		}
 		if ($is_available == 0){
 			$surpressed{$sel}{$gw} = 1;
-			print "# gw not available for uplink (channel $sel_ch)\n" if ($debug == 1);
+			print "# gw not available for uplink (channel $sel_ch, SF $sel_sf)\n" if ($debug == 1);
 			next;
 		}
 		foreach my $n (keys %transmissions){
@@ -630,9 +629,9 @@ sub node_col{
 		}
 		if ($surpressed{$sel}{$gw} == 0){
 			push (@gw_rc, [$gw, $prx]);
-			# set the gw unavailable (exclude preamble)
+			# set the gw unavailable (exclude preamble) and locked to the specific Ch/SF
 			my $pr_time = 2**$sel_sf/$bw;
-			push(@{$gunavailability{$gw}}, [$sel_sta+$pr_time, $sel_end, $sel_ch]);
+			push(@{$gunavailability{$gw}}, [$sel_sta+$pr_time, $sel_end, $sel_ch, $sel_sf]);
 		}
 	}
 	@{$overlaps{$sel}} = ();
