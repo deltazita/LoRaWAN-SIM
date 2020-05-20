@@ -259,7 +259,15 @@ while (1){
 					}
 				}
 				if (defined $new_ptx){
-					$gdest{$sel_gw}[-1][5] = $new_ptx;
+					my $new_index = 0;
+					foreach my $p (@Ptx_l){
+						if ($p == $new_ptx){
+							last;
+						}
+						$new_index += 1;
+					}
+					$gdest{$sel_gw}[-1][5] = $new_index;
+					print "# it will suggested that $sel changes tx power to $Ptx_l[$new_index]\n" if ($debug == 1);
 				}
 			}
 		}else{ # non-successful transmission
@@ -287,10 +295,10 @@ while (1){
 			}
 			$sel_end = $sel_sta+$at;
 			$transmissions{$sel} = [$sel_sta, $sel_end, $sel_ch, $sel_sf];
-			$total_trans += 1 if ($sel_sta+5 < $sim_time); # do not count transmissions that exceed the simulation time
-			$total_retrans += 1 if ($sel_sta+5 < $sim_time);
+			$total_trans += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time
+			$total_retrans += 1 if ($sel_sta < $sim_time);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w if ($sel_sta+5 < $sim_time);
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w if ($sel_sta < $sim_time);
 		}else{
 			# this case will be handled during the ack transmission
 		}
@@ -319,18 +327,17 @@ while (1){
 		# check if it collides with other transmissions
 		my $failed = 0;
 		$index = 0;
-		my $sel_index = 0;
 		my ($dest, $st, $sf, $rwindow, $ch, $pow);
 		foreach my $tup (@{$gdest{$sel}}){
 			my ($dest_, $st_, $sf_, $rwindow_, $ch_, $p_) = @$tup;
 			if ($st_ == $sel_sta){
 				($dest, $st, $sf, $rwindow, $ch, $pow) = ($dest_, $st_, $sf_, $rwindow_, $ch_, $p_);
-				$sel_index = $index;
 				last;
 			}
 			$index += 1;
 		}
-		splice @{$gdest{$sel}}, $sel_index, 1;
+		splice @{$gdest{$sel}}, $index, 1;
+		# printf "%d %d\n", scalar @{$gunavailability{$sel}}, scalar @{$gdest{$sel}};
 		# first check if the transmission can reach the node
 		my $G = rand(1);
 		my $d = distance($gcoords{$sel}[0], $ncoords{$dest}[0], $gcoords{$sel}[1], $ncoords{$dest}[1]);
@@ -420,7 +427,7 @@ while (1){
 				$nptx{$dest} = $pow;
 				$extra_bytes = $adr;
 				$nresponse{$dest} = 1;
-				print "# transmit power of $dest is set to $pow\n" if ($debug == 1);
+				print "# transmit power of $dest is set to $Ptx_l[$pow]\n" if ($debug == 1);
 			}
 			$nconsumption{$dest} += airtime($sf, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
 		}else{ # ack was not received
@@ -450,10 +457,10 @@ while (1){
 		}
 		my $new_end = $new_start + $at;
 		$transmissions{$dest} = [$new_start, $new_end, $ch, $sf];
-		$total_trans += 1 if ($new_start+5 < $sim_time); # do not count transmissions that exceed the simulation time
-		$total_retrans += 1 if (($failed == 1) && ($new_start+5 < $sim_time)); 
+		$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
+		$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
 		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
-		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf)+1) * $Pidle_w if ($new_start+5 < $sim_time);
+		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf)+1) * $Pidle_w if ($new_start < $sim_time);
 	}
 }
 # print "---------------------\n";
