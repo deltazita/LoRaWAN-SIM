@@ -116,7 +116,7 @@ foreach my $n (keys %ncoords){
 	my $start = random_uniform(1, 0, $period); # transmissions are periodic
 	my $sf = min_sf($n);
 	my $stop = $start + airtime($sf);
-	# print "# $n will transmit from $start to $stop\n" if ($debug == 1);
+	print "# $n will transmit from $start to $stop (SF $sf)\n" if ($debug == 1);
 	$transmissions{$n} = [$start, $stop, $channels[rand @channels], $sf];
 	$nconsumption{$n} += airtime($sf) * $Ptx_w[$nptx{$n}] + (airtime($sf)+1) * $Pidle_w; # +1sec for sensing
 	$total_trans += 1;
@@ -252,7 +252,7 @@ while (1){
 				# the SF is already adjusted in min_sf; here only the transmit power is adjusted
 				my $gap = $max_p - $sensis[$sel_sf-7][bwconv($bw)];
 				my $new_ptx = undef;
-				foreach my $p (@Ptx_l){
+				foreach my $p (sort {$a<=>$b} @Ptx_l){
 					next if ($p >= $Ptx_l[$nptx{$sel}]);
 					if ($gap-$p >= 10){
 						$new_ptx = $p;
@@ -641,7 +641,7 @@ sub node_col{
 sub min_sf{
 	my $n = shift;
 	my $G = rand(1);
-	my ($dref, $Lpld0, $Xs, $gamma) = (40, 95, $var*$G, 2.08);
+	my $Xs = $var*$G;
 	my $sf = 0;
 	my $bwi = bwconv($bw);
 	foreach my $gw (keys %gcoords){
