@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2020.5.19                                      #
+#                                 v2020.5.20                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -32,7 +32,7 @@ use Math::Random qw(random_uniform random_exponential);
 use Term::ProgressBar 2.00;
 use GD::SVG;
 
-die "usage: ./LoRaWAN.pl full_collision_check(0/1) packets_per_hour simulation_time(secs) terrain_file!\n" unless (scalar @ARGV == 4);
+die "usage: ./LoRaWAN.pl <packets_per_hour> <simulation_time(secs)> <terrain_file!>\n" unless (scalar @ARGV == 3);
 
 # node attributes
 my %ncoords = (); # node coordinates
@@ -86,9 +86,9 @@ my @pl_u = ($fpl[0]+$overhead_u, $fpl[1]+$overhead_u, $fpl[2]+$overhead_u, $fpl[
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
-my $full_collision = $ARGV[0]; # take into account non-orthogonal SF transmissions or not
-my $period = 3600/$ARGV[1]; # time period between transmissions
-my $sim_time = $ARGV[2]; # given simulation time
+my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
+my $period = 3600/$ARGV[0]; # time period between transmissions
+my $sim_time = $ARGV[1]; # given simulation time
 my $debug = 0; # enable debug mode
 my $sim_end = 0;
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side (not currenly being used)
@@ -153,9 +153,10 @@ while (1){
 		my $failed = 0;
 		if (scalar @$gw_rc > 0){ # if at least one gateway received the pkt -> successful transmission
 			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
-			# now we have to find which gateway (if any) can transmit an ack
-			# check which gw can send an ack (RX1)
-			# we check if the gw is in downlink mode
+			# now we have to find which gateway (if any) can transmit an ack in RX1 or RX2
+			
+			# check RX1
+			# we first check if the gw is in downlink mode
 			my $max_p = -9999999999999;
 			my $sel_gw = undef;
 			my ($ack_sta, $ack_end) = ($sel_end+1, $sel_end+1+airtime($sel_sf, $overhead_d));
@@ -165,11 +166,9 @@ while (1){
 				my $is_available = 1;
 				foreach my $gu (@{$gunavailability{$gw}}){
 					my ($sta, $end, $ch, $sf) = @$gu;
-					if ($ch == $rx2ch){ # check if the gw is in downlink mode
-						if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
-							$is_available = 0;
-							last;
-						}
+					if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
+						$is_available = 0;
+						last;
 					}
 				}
 				next if ($is_available == 0);
@@ -199,11 +198,9 @@ while (1){
 						my $is_available = 1;
 						foreach my $gu (@{$gunavailability{$gw}}){
 							my ($sta, $end, $ch, $sf) = @$gu;
-							if ($ch == $rx2ch){
-								if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
-									$is_available = 0;
-									last;
-								}
+							if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
+								$is_available = 0;
+								last;
 							}
 						}
 						next if ($is_available == 0);
@@ -333,7 +330,6 @@ while (1){
 			$index += 1;
 		}
 		splice @{$gdest{$sel}}, $index, 1;
-		# printf "%d %d\n", scalar @{$gunavailability{$sel}}, scalar @{$gdest{$sel}};
 		# first check if the transmission can reach the node
 		my $G = rand(1);
 		my $d = distance($gcoords{$sel}[0], $ncoords{$dest}[0], $gcoords{$sel}[1], $ncoords{$dest}[1]);
@@ -704,7 +700,7 @@ sub bwconv{
 }
 
 sub read_data{
-	my $terrain_file = $ARGV[3];
+	my $terrain_file = $ARGV[2];
 	open(FH, "<$terrain_file") or die "Error: could not open terrain file $terrain_file\n";
 	my @nodes = ();
 	my @gateways = ();
@@ -782,7 +778,7 @@ sub generate_picture{
 		$im->rectangle($x-5, $y-5, $x+5, $y+5, $red);
 		$im->string(gdGiantFont,$x-2,$y-20,$g,$blue);
 	}
-	my $output_file = $ARGV[3]."-img.svg";
+	my $output_file = $ARGV[2]."-img.svg";
 	open(FILEOUT, ">$output_file") or die "could not open file $output_file for writing!";
 	binmode FILEOUT;
 	print FILEOUT $im->svg;
