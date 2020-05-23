@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2020.5.20                                      #
+#                                 v2020.5.23                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -250,8 +250,8 @@ while (1){
 				my $gap = $max_p - $sensis[$sel_sf-7][bwconv($bw)];
 				my $new_ptx = undef;
 				foreach my $p (sort {$a<=>$b} @Ptx_l){
-					next if ($p >= $Ptx_l[$nptx{$sel}]);
-					if ($gap-$p >= 10){
+					next if ($p >= $Ptx_l[$nptx{$sel}]); # we can only decrease power for the moment
+					if ($gap-$Ptx_l[$nptx{$sel}]+$p >= 10){
 						$new_ptx = $p;
 						last;
 					}
@@ -472,7 +472,7 @@ printf "Total number of unique transmissions = %d\n", $total_trans-$total_retran
 print "Total packets acknowledged = $acked\n";
 print "Total packets dropped = $dropped\n";
 printf "Packet Delivery Ratio = %.5f\n", $acked/($total_trans-$total_retrans); # ACKed PDR
-printf "Packet Reception Rate = %.5f\n", ($total_trans-$total_retrans)/$total_trans; # Global PRR
+printf "Packet Reception Ratio = %.5f\n", ($total_trans-$total_retrans)/$total_trans; # Global PRR
 print "No GW available in RX1 = $no_rx1 times\n";
 print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
