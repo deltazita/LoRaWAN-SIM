@@ -42,6 +42,7 @@ my %surpressed = ();
 my %nreachablegws = (); # reachable gws
 my %nptx = (); # transmit power index
 my %nresponse = (); # 0/1 (1 = ADR response will be sent)
+my %nconfirmed = (); # confirmed transmissions or not
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -67,7 +68,7 @@ my $rx2sf = 12; # SF used for RX2 (LoRaWAN default = SF12, TTN uses SF9)
 my $rx2ch = 869525000; # channel used for RX2 (LoRaWAN default = 869.525MHz, TTN uses the same)
 
 # packet specific parameters
-my %transmissions = (); # current transmissions
+my %transmissions = (); # contains the initial transmissions
 my @fpl = (51, 51, 51, 51, 51, 51); # uplink frame payload per SF (bytes)
 my $preamble = 8; # in symbols
 my $H = 0; # header 0/1
@@ -86,13 +87,15 @@ my @pl_u = ($fpl[0]+$overhead_u, $fpl[1]+$overhead_u, $fpl[2]+$overhead_u, $fpl[
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
+my $confirmed_perc = 1; # percentage of nodes that require confirmed transmissions
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $period = 3600/$ARGV[0]; # time period between transmissions
 my $sim_time = $ARGV[1]; # given simulation time
 my $debug = 0; # enable debug mode
 my $sim_end = 0;
-my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side (not currenly being used)
+my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side, normalised terrain side
 my $start_time = time; # just for statistics
+my $successful = 0; # number of delivered packets (not necessarily acked)
 my $dropped = 0; # number of dropped packets
 my $total_trans = 0; # number of transm. packets
 my $total_retrans = 0; # number of re-transm packets
@@ -148,7 +151,8 @@ while (1){
 		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf); # check collisions and compute a list of gws that received the uplink pkt
 		my $rwindow = 0;
 		my $failed = 0;
-		if (scalar @$gw_rc > 0){ # if at least one gateway received the pkt -> successful transmission
+		if ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 1)){ # if at least one gateway received the pkt -> successful transmission
+			$successful += 1;
 			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
 			# now we have to find which gateway (if any) can transmit an ack in RX1 or RX2
 			
@@ -278,38 +282,72 @@ while (1){
 					print "# it will be suggested that $sel changes tx power to $Ptx_l[$new_index]\n" if ($debug == 1);
 				}
 			}
-		}else{ # non-successful transmission
-			$failed = 1;
-		}
-# 		delete $transmissions{$sel}; # delete the old transmission
-		if ($failed == 1){
-			if ($nretransmisssions{$sel} < $max_retr){
-				$nretransmisssions{$sel} += 1;
-			}else{
-				$dropped += 1;
-				$nretransmisssions{$sel} = 0;
-				print "# $sel 's packet lost!\n" if ($debug == 1);
+		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful transmission but no ack is required
+			$successful += 1;
+			$acked += 1; # consider non-confirmed transmissions as acked for statistical reasons
+			my $at = airtime($sel_sf, $pl_u[$sel_sf-7]);
+			$sel_sta = $sel_end + $period + rand(1);
+			my $next_allowed = $sel_end + 99*$at;
+			if ($sel_sta < $next_allowed){
+				print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
+				$sel_sta = $next_allowed;
 			}
-			# the node stays on only for the duration of the preamble for both windows
-			$nconsumption{$sel} += $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
-			$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
-			# plan the next transmission as soon as the duty cycle permits that and place it at the correct position
-			my $at = airtime($sel_sf);
-			$sel_sta = $sel_end + 99*$at;
-			$sel_end = $sel_sta+$at;
+			$sel_end = $sel_sta + $at;
+			# place the new transmission at the correct position
 			my $i = 0;
 			foreach my $el (@sorted_t){
-				my ($n, $sta, $end, $ch, $sf) = @$el;
+				my ($n, $sta, $end, $ch_, $sf_) = @$el;
 				last if ($sta > $sel_sta);
 				$i += 1;
 			}
 			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf]);
 			$total_trans += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time
-			$total_retrans += 1 if ($sel_sta < $sim_time);
+			$total_retrans += 1 if (($sel_sta < $sim_time) && ($nconfirmed{$sel} == 1));
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w if ($sel_sta < $sim_time);
-		}else{
-			# this case will be handled during the ack transmission
+		}else{ # non-successful transmission
+			$failed = 1;
+		}
+		if ($failed == 1){
+			my $at = 0;
+			if ($nconfirmed{$sel} == 1){
+				if ($nretransmisssions{$sel} < $max_retr){
+					$nretransmisssions{$sel} += 1;
+				}else{
+					$dropped += 1;
+					$nretransmisssions{$sel} = 0;
+					print "# $sel 's packet lost!\n" if ($debug == 1);
+				}
+				# the node stays on only for the duration of the preamble for both receive windows
+				$nconsumption{$sel} += $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
+				$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
+				# plan the next transmission as soon as the duty cycle permits that
+				$at = airtime($sel_sf);
+				$sel_sta = $sel_end + 99*$at;
+			}else{
+				$dropped += 1;
+				print "# $sel 's packet lost!\n" if ($debug == 1);
+				$at = airtime($sel_sf, $pl_u[$sel_sf-7]);
+				$sel_sta = $sel_end + $period + rand(1);
+				my $next_allowed = $sel_end + 99*$at;
+				if ($sel_sta < $next_allowed){
+					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
+					$sel_sta = $next_allowed;
+				}
+			}
+			$sel_end = $sel_sta+$at;
+			# place the new transmission at the correct position
+			my $i = 0;
+			foreach my $el (@sorted_t){
+				my ($n, $sta, $end, $ch_, $sf_) = @$el;
+				last if ($sta > $sel_sta);
+				$i += 1;
+			}
+			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf]);
+			$total_trans += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time
+			$total_retrans += 1 if (($sel_sta < $sim_time) && ($nconfirmed{$sel} == 1));
+			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w if ($sel_sta < $sim_time);
 		}
 		foreach my $g (keys %gcoords){
 			$surpressed{$sel}{$g} = 0;
@@ -492,10 +530,12 @@ printf "Max node consumption = %.5f mJ\n", $max_cons;
 print "Total number of transmissions = $total_trans\n";
 print "Total number of re-transmissions = $total_retrans\n";
 printf "Total number of unique transmissions = %d\n", $total_trans-$total_retrans;
+print "Total packets delivered = $successful\n";
 print "Total packets acknowledged = $acked\n";
 print "Total packets dropped = $dropped\n";
-printf "Packet Delivery Ratio = %.5f\n", $acked/($total_trans-$total_retrans); # ACKed PDR
-printf "Packet Reception Ratio = %.5f\n", ($total_trans-$total_retrans)/$total_trans; # Global PRR
+printf "Packet Delivery Ratio 1 = %.5f\n", ($total_trans-$total_retrans-$dropped)/($total_trans-$total_retrans); # unique packets delivered / unique packets transmitted
+printf "Packet Delivery Ratio 2 = %.5f\n", $acked/($total_trans-$total_retrans); # (delivered+finally ACKed) / total unique
+printf "Packet Reception Ratio = %.5f\n", $successful/$total_trans; # Global PRR
 print "No GW available in RX1 = $no_rx1 times\n";
 print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
@@ -748,6 +788,7 @@ sub read_data{
 	}
 	close(FH);
 	
+	my $conf_num = int($confirmed_perc * (scalar @nodes));
 	foreach my $node (@nodes){
 		my ($n, $x, $y) = @$node;
 		$ncoords{$n} = [$x, $y];
@@ -755,6 +796,12 @@ sub read_data{
 		$nptx{$n} = scalar @Ptx_l - 1; # start with the highest Ptx
 		$nresponse{$n} = 0;
 		$nretransmisssions{$n} = 0;
+		if ($conf_num > 0){
+			$nconfirmed{$n} = 1;
+			$conf_num -= 1;
+		}else{
+			$nconfirmed{$n} = 0;
+		}
 	}
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
@@ -768,6 +815,7 @@ sub read_data{
 			$surpressed{$n}{$g} = 0;
 		}
 		@{$overlaps{$g}} = ();
+		$gresponses{$g} = 0;
 	}
 }
 

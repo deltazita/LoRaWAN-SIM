@@ -1,5 +1,5 @@
 # LoRaWAN-SIM
-A LoRaWAN simulator for confirmed transmissions and multiple gateways
+A LoRaWAN simulator for confirmed/unconfirmed transmissions and multiple gateways
 
 ## Features:
 - Multiple half-duplex gateways
@@ -23,13 +23,13 @@ A LoRaWAN simulator for confirmed transmissions and multiple gateways
 ## Usage:
 ```
 perl generate_terrain.pl terrain_side_size_(m) num_of_nodes num_of_gateways > terrain.txt
-perl LoRaWAN.pl full_collision_check(0/1) packets_per_hour simulation_time(secs) terrain.txt
+perl LoRaWAN.pl packets_per_hour simulation_time(secs) terrain.txt
 ```
 
 ### Example with 1000x1000m terrain size, 100 nodes, 5 gateways, 1pkt/5min, ~3h sim time:
 ```
 perl generate_terrain.pl 1000 100 5 > terrain.txt
-perl LoRaWAN.pl 1 12 10000 terrain.txt
+perl LoRaWAN.pl 12 10000 terrain.txt
 ```
 
 ### Output sample:  
