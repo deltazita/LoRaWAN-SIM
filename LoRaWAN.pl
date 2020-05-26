@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2020.5.23                                      #
+#                                 v2020.5.26                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -121,22 +121,19 @@ foreach my $n (keys %ncoords){
 	$nconsumption{$n} += airtime($sf) * $Ptx_w[$nptx{$n}] + (airtime($sf)+1) * $Pidle_w; # +1sec for sensing
 	$total_trans += 1;
 }
+# sort transmissions in ascending order
+my @sorted_t = ();
+foreach my $n (sort { $transmissions{$a}[0] <=> $transmissions{$b}[0] } keys %transmissions) {
+	my @copy = @{$transmissions{$n}}; # let's keep this array as it is
+	unshift (@copy, $n);
+	push (@sorted_t, \@copy);
+}
 
 # main loop
 while (1){
 	print "-------------------------------\n" if ($debug == 1);
 	# grab the earliest transmission
-	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf) = (undef, 9999999999999, 0, 0, 0);
-	foreach my $n (keys %transmissions){
-		my ($sta, $end, $ch, $sf) = @{$transmissions{$n}};
-		if ($sta < $sel_sta){
-			$sel_sta = $sta;
-			$sel_end = $end;
-			$sel_ch = $ch;
-			$sel_sf = $sf;
-			$sel = $n;
-		}
-	}
+	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf) = @{shift(@sorted_t)};
 	$next_update = $progress->update($sel_end);
 	if ($sel_sta > $sim_time){
 		$next_update = $progress->update($sim_time);
@@ -184,7 +181,14 @@ while (1){
 				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf]);
 				$gdc{$sel_gw}{$sel_ch} = $ack_end+airtime($sel_sf, $overhead_d)*99;
 				my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
-				$transmissions{$new_name} = [$ack_sta, $ack_end, $sel_ch, $sel_sf];
+				# place new transmission at the correct position
+				my $i = 0;
+				foreach my $el (@sorted_t){
+					my ($n, $sta, $end, $ch, $sf) = @$el;
+					last if ($sta > $sel_sta);
+					$i += 1;
+				}
+				splice(@sorted_t, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $sel_sf]);
 				push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, -1]);
 			}else{
 				# check RX2
@@ -237,7 +241,13 @@ while (1){
 					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $rx2ch, $rx2sf]);
 					$gdc{$sel_gw}{$rx2ch} = $ack_end+airtime($rx2sf, $overhead_d)*90;
 					my $new_name = $sel_gw.$gresponses{$sel_gw};
-					$transmissions{$new_name} = [$ack_sta, $ack_end, $rx2ch, $rx2sf];
+					my $i = 0;
+					foreach my $el (@sorted_t){
+						my ($n, $sta, $end, $ch, $sf) = @$el;
+						last if ($sta > $sel_sta);
+						$i += 1;
+					}
+					splice(@sorted_t, $i, 0, [$new_name, $ack_sta, $ack_end, $rx2ch, $rx2sf]);
 					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $rx2sf, $rwindow, $rx2ch, -1]);
 				}else{
 					$no_rx2 += 1;
@@ -271,7 +281,7 @@ while (1){
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
-		delete $transmissions{$sel}; # delete the old transmission
+# 		delete $transmissions{$sel}; # delete the old transmission
 		if ($failed == 1){
 			if ($nretransmisssions{$sel} < $max_retr){
 				$nretransmisssions{$sel} += 1;
@@ -283,11 +293,17 @@ while (1){
 			# the node stays on only for the duration of the preamble for both windows
 			$nconsumption{$sel} += $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
 			$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
-			# plan the next transmission as soon as the duty cycle permits that
+			# plan the next transmission as soon as the duty cycle permits that and place it at the correct position
 			my $at = airtime($sel_sf);
 			$sel_sta = $sel_end + 99*$at;
 			$sel_end = $sel_sta+$at;
-			$transmissions{$sel} = [$sel_sta, $sel_end, $sel_ch, $sel_sf];
+			my $i = 0;
+			foreach my $el (@sorted_t){
+				my ($n, $sta, $end, $ch, $sf) = @$el;
+				last if ($sta > $sel_sta);
+				$i += 1;
+			}
+			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf]);
 			$total_trans += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time
 			$total_retrans += 1 if ($sel_sta < $sim_time);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
@@ -303,7 +319,7 @@ while (1){
 	}else{ # if the packet is a gw transmission
 		
 		
-		delete $transmissions{$sel}; # delete the old transmission
+# 		delete $transmissions{$sel}; # delete the old transmission
 		$sel =~ s/[0-9].*//; # keep only the letter(s)
 		# reduce gunavailability population
 		my @indices = ();
@@ -338,8 +354,9 @@ while (1){
 			print "# ack didn't reach node $dest\n" if ($debug == 1);
 			$failed = 1;
 		}
-		foreach my $n (keys %transmissions){
-			my ($sta, $end, $ch_, $sf_) = @{$transmissions{$n}};
+		foreach my $tr (@sorted_t){
+			my ($n, $sta, $end, $ch_, $sf_) = @$tr;
+			last if ($sta > $sel_end);
 			my $nn = $n;
 			$n =~ s/[0-9].*// if ($n =~ /^[A-Z]/);
 			next if (($n eq $sel) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch_ != $ch)); # skip non-overlapping transmissions or different channels
@@ -449,7 +466,13 @@ while (1){
 		}
 		$new_start = $next_allowed if ($failed == 1);
 		my $new_end = $new_start + $at;
-		$transmissions{$dest} = [$new_start, $new_end, $ch, $sf];
+		my $i = 0;
+		foreach my $el (@sorted_t){
+			my ($n, $sta, $end, $ch_, $sf_) = @$el;
+			last if ($sta > $new_start);
+			$i += 1;
+		}
+		splice(@sorted_t, $i, 0, [$dest, $new_start, $new_end, $ch, $sf]);
 		$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
 		$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
 		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
@@ -514,9 +537,10 @@ sub node_col{
 			print "# gw not available for uplink (channel $sel_ch, SF $sel_sf)\n" if ($debug == 1);
 			next;
 		}
-		foreach my $n (keys %transmissions){
+		foreach my $tr (@sorted_t){
+			my ($n, $sta, $end, $ch, $sf) = @$tr;
+			last if ($sta > $sel_end);
 			if ($n =~ /^[0-9]/){ # node transmission
-				my ($sta, $end, $ch, $sf) = @{$transmissions{$n}};
 				next if (($n == $sel) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch != $sel_ch));
 				my $overlap = 0;
 				# time overlap
@@ -563,7 +587,6 @@ sub node_col{
 					}
 				}
 			}else{ # n is a gw in this case
-				my ($sta, $end, $ch, $sf) = @{$transmissions{$n}};					
 				my $nn = $n;
 				$n =~ s/[0-9].*//; # keep only the letter(s)
 				next if (($nn eq $gw) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch != $sel_ch));
