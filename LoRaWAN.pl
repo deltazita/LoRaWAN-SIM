@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2020.5.26                                      #
+#                                 v2020.5.30                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -43,6 +43,8 @@ my %nreachablegws = (); # reachable gws
 my %nptx = (); # transmit power index
 my %nresponse = (); # 0/1 (1 = ADR response will be sent)
 my %nconfirmed = (); # confirmed transmissions or not
+my %nunique = (); # unique transmissions per node (equivalent to FCntUp)
+my %nacked = (); # unique acked packets (for confirmed transmissions) or just delivered (for non-confirmed transmissions)
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -99,7 +101,6 @@ my $successful = 0; # number of delivered packets (not necessarily acked)
 my $dropped = 0; # number of dropped packets
 my $total_trans = 0; # number of transm. packets
 my $total_retrans = 0; # number of re-transm packets
-my $acked = 0; # number of acknowledged packets
 my $no_rx1 = 0; # no gw was available in RX1
 my $no_rx2 = 0; # no gw was available in RX1 or RX2
 my $picture = 0; # generate an energy consumption map
@@ -120,6 +121,7 @@ foreach my $n (keys %ncoords){
 	my $sf = min_sf($n);
 	my $stop = $start + airtime($sf);
 	print "# $n will transmit from $start to $stop (SF $sf)\n" if ($debug == 1);
+	$nunique{$n} = 1;
 	$transmissions{$n} = [$start, $stop, $channels[rand @channels], $sf];
 	$nconsumption{$n} += airtime($sf) * $Ptx_w[$nptx{$n}] + (airtime($sf)+1) * $Pidle_w; # +1sec for sensing
 	$total_trans += 1;
@@ -284,7 +286,7 @@ while (1){
 			}
 		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful transmission but no ack is required
 			$successful += 1;
-			$acked += 1; # consider non-confirmed transmissions as acked for statistical reasons
+			$nacked{$sel} += 1;
 			my $at = airtime($sel_sf, $pl_u[$sel_sf-7]);
 			$sel_sta = $sel_end + $period + rand(1);
 			my $next_allowed = $sel_end + 99*$at;
@@ -300,6 +302,7 @@ while (1){
 				last if ($sta > $sel_sta);
 				$i += 1;
 			}
+			$nunique{$sel} += 1;
 			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf]);
 			$total_trans += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time
 			$total_retrans += 1 if (($sel_sta < $sim_time) && ($nconfirmed{$sel} == 1));
@@ -316,6 +319,7 @@ while (1){
 				}else{
 					$dropped += 1;
 					$nretransmisssions{$sel} = 0;
+					$nunique{$sel} += 1;
 					print "# $sel 's packet lost!\n" if ($debug == 1);
 				}
 				# the node stays on only for the duration of the preamble for both receive windows
@@ -326,6 +330,7 @@ while (1){
 				$sel_sta = $sel_end + 99*$at;
 			}else{
 				$dropped += 1;
+				$nunique{$sel} += 1;
 				print "# $sel 's packet lost!\n" if ($debug == 1);
 				$at = airtime($sel_sf, $pl_u[$sel_sf-7]);
 				$sel_sta = $sel_end + $period + rand(1);
@@ -465,7 +470,8 @@ while (1){
 		if ($failed == 0){ 
 			print "# ack successfully received, $dest 's transmission has been acked\n" if ($debug == 1);
 			$nretransmisssions{$dest} = 0;
-			$acked += 1;
+			$nacked{$dest} += 1;
+			$nunique{$dest} += 1;
 			if ($rwindow == 2){ # also count the RX1 window
 				$nconsumption{$dest} += $preamble*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
 			}
@@ -483,6 +489,7 @@ while (1){
 			}else{
 				$dropped += 1;
 				$nretransmisssions{$dest} = 0;
+				$nunique{$dest} += 1;
 				print "# $dest 's packet lost (no ack received)!\n" if ($debug == 1);
 			}
 			$nconsumption{$dest} += $preamble*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
@@ -529,12 +536,11 @@ printf "Min node consumption = %.5f mJ\n", $min_cons;
 printf "Max node consumption = %.5f mJ\n", $max_cons;
 print "Total number of transmissions = $total_trans\n";
 print "Total number of re-transmissions = $total_retrans\n";
-printf "Total number of unique transmissions = %d\n", $total_trans-$total_retrans;
+printf "Total number of unique transmissions = %d\n",(sum values %nunique);
 print "Total packets delivered = $successful\n";
-print "Total packets acknowledged = $acked\n";
+printf "Total packets acknowledged = %d\n", (sum values %nacked);
 print "Total packets dropped = $dropped\n";
-printf "Packet Delivery Ratio 1 = %.5f\n", ($total_trans-$total_retrans-$dropped)/($total_trans-$total_retrans); # unique packets delivered / unique packets transmitted
-printf "Packet Delivery Ratio 2 = %.5f\n", $acked/($total_trans-$total_retrans); # (delivered+finally ACKed) / total unique
+printf "Packet Delivery Ratio = %.5f\n", (sum values %nacked)/(sum values %nunique); # unique packets delivered / unique packets transmitted
 printf "Packet Reception Ratio = %.5f\n", $successful/$total_trans; # Global PRR
 print "No GW available in RX1 = $no_rx1 times\n";
 print "No GW available in RX1 or RX2 = $no_rx2 times\n";
@@ -802,6 +808,7 @@ sub read_data{
 		}else{
 			$nconfirmed{$n} = 0;
 		}
+		$nacked{$n} = 0;
 	}
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
