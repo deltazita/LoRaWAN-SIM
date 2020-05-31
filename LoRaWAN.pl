@@ -191,7 +191,7 @@ while (1){
 				my $i = 0;
 				foreach my $el (@sorted_t){
 					my ($n, $sta, $end, $ch, $sf) = @$el;
-					last if ($sta > $sel_sta);
+					last if ($sta > $ack_sta);
 					$i += 1;
 				}
 				splice(@sorted_t, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $sel_sf]);
@@ -250,7 +250,7 @@ while (1){
 					my $i = 0;
 					foreach my $el (@sorted_t){
 						my ($n, $sta, $end, $ch, $sf) = @$el;
-						last if ($sta > $sel_sta);
+						last if ($sta > $ack_sta);
 						$i += 1;
 					}
 					splice(@sorted_t, $i, 0, [$new_name, $ack_sta, $ack_end, $rx2ch, $rx2sf]);
