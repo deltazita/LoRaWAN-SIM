@@ -325,9 +325,10 @@ while (1){
 				# the node stays on only for the duration of the preamble for both receive windows
 				$nconsumption{$sel} += $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
 				$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
-				# plan the next transmission as soon as the duty cycle permits that
+				# plan the next transmission at a random time as soon as the duty cycle permits that
 				$at = airtime($sel_sf);
-				$sel_sta = $sel_end + 99*$at;
+				$sel_sta = $sel_end + rand($period/8);
+				$sel_sta = $sel_end + 99*$at + rand(1) if ($sel_sta < ($sel_end + 99*$at));
 			}else{
 				$dropped += 1;
 				$nunique{$sel} += 1;
@@ -504,12 +505,12 @@ while (1){
 		}
 		my $at = airtime($sf, $pl_u[$sf-7]+$extra_bytes);
 		my $new_start = $sel_sta - $rwindow + $period + rand(1);
+		$new_start = $sel_sta - $rwindow + rand($period/8) if ($failed == 1);
 		my $next_allowed = $sel_sta - $rwindow + 99*$at;
 		if ($new_start < $next_allowed){
 			print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
 			$new_start = $next_allowed;
 		}
-		$new_start = $next_allowed if ($failed == 1);
 		my $new_end = $new_start + $at;
 		my $i = 0;
 		foreach my $el (@sorted_t){
