@@ -304,10 +304,10 @@ while (1){
 			}
 			$nunique{$sel} += 1;
 			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf]);
-			$total_trans += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time
-			$total_retrans += 1 if (($sel_sta < $sim_time) && ($nconfirmed{$sel} == 1));
+			$total_trans += 1;
+			$total_retrans += 1;
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w if ($sel_sta < $sim_time);
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w;
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
@@ -350,10 +350,10 @@ while (1){
 				$i += 1;
 			}
 			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf]);
-			$total_trans += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time
-			$total_retrans += 1 if (($sel_sta < $sim_time) && ($nconfirmed{$sel} == 1));
+			$total_trans += 1;
+			$total_retrans += 1;
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w if ($sel_sta < $sim_time);
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w;
 		}
 		foreach my $g (keys %gcoords){
 			$surpressed{$sel}{$g} = 0;
@@ -519,8 +519,8 @@ while (1){
 			$i += 1;
 		}
 		splice(@sorted_t, $i, 0, [$dest, $new_start, $new_end, $ch, $sf]);
-		$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
-		$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
+		$total_trans += 1;
+		$total_retrans += 1;
 		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
 		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf)+1) * $Pidle_w if ($new_start < $sim_time);
 	}
