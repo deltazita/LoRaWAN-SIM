@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2020.5.30                                      #
+#                                 v2020.6.20                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -16,8 +16,6 @@
 # -- Collision handling for both uplink and downlink transmissions                #
 # -- Energy consumption calculation (uplink+downlink)                             #
 #                                                                                 #
-# Assumptions (or work in progress):                                              #
-# -- ADR is under development                                                     #
 #                                                                                 #
 # author: Dr. Dimitrios Zorbas                                                    #
 # email: dimzorbas@ieee.org                                                       #
@@ -45,6 +43,7 @@ my %nresponse = (); # 0/1 (1 = ADR response will be sent)
 my %nconfirmed = (); # confirmed transmissions or not
 my %nunique = (); # unique transmissions per node (equivalent to FCntUp)
 my %nacked = (); # unique acked packets (for confirmed transmissions) or just delivered (for non-confirmed transmissions)
+my %nperiod = (); # time period between two successive transmissions
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -91,7 +90,7 @@ my %overlaps = (); # handles special packet overlaps
 # simulation parameters
 my $confirmed_perc = 1; # percentage of nodes that require confirmed transmissions
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
-my $period = 3600/$ARGV[0]; # time period between transmissions
+my $period = 3600/$ARGV[0]; # avg time period between transmissions
 my $sim_time = $ARGV[1]; # given simulation time
 my $debug = 0; # enable debug mode
 my $sim_end = 0;
@@ -104,6 +103,7 @@ my $total_retrans = 0; # number of re-transm packets
 my $no_rx1 = 0; # no gw was available in RX1
 my $no_rx2 = 0; # no gw was available in RX1 or RX2
 my $picture = 0; # generate an energy consumption map
+my $fixed_packet_rate = 0; # enable / disable fixed packet rate for all nodes
 
 my $progress = Term::ProgressBar->new({
 	name  => 'Progress',
@@ -117,7 +117,7 @@ read_data(); # read terrain file
 
 # first transmission
 foreach my $n (keys %ncoords){
-	my $start = random_uniform(1, 0, $period); # transmissions are periodic
+	my $start = random_uniform(1, 0, $period); # place the first transmission in range (0, $period)
 	my $sf = min_sf($n);
 	my $stop = $start + airtime($sf);
 	print "# $n will transmit from $start to $stop (SF $sf)\n" if ($debug == 1);
@@ -288,7 +288,7 @@ while (1){
 			$successful += 1;
 			$nacked{$sel} += 1;
 			my $at = airtime($sel_sf, $pl_u[$sel_sf-7]);
-			$sel_sta = $sel_end + $period + rand(1);
+			$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
 			my $next_allowed = $sel_end + 99*$at;
 			if ($sel_sta < $next_allowed){
 				print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
@@ -327,14 +327,14 @@ while (1){
 				$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 				# plan the next transmission at a random time as soon as the duty cycle permits that
 				$at = airtime($sel_sf);
-				$sel_sta = $sel_end + rand($period/8);
+				$sel_sta = $sel_end + rand($nperiod{$sel}/8);
 				$sel_sta = $sel_end + 99*$at + rand(1) if ($sel_sta < ($sel_end + 99*$at));
 			}else{
 				$dropped += 1;
 				$nunique{$sel} += 1;
 				print "# $sel 's packet lost!\n" if ($debug == 1);
 				$at = airtime($sel_sf, $pl_u[$sel_sf-7]);
-				$sel_sta = $sel_end + $period + rand(1);
+				$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
 				my $next_allowed = $sel_end + 99*$at;
 				if ($sel_sta < $next_allowed){
 					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
@@ -504,8 +504,8 @@ while (1){
 			$nresponse{$dest} = 0;
 		}
 		my $at = airtime($sf, $pl_u[$sf-7]+$extra_bytes);
-		my $new_start = $sel_sta - $rwindow + $period + rand(1);
-		$new_start = $sel_sta - $rwindow + rand($period/8) if ($failed == 1);
+		my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
+		$new_start = $sel_sta - $rwindow + rand($nperiod{$dest}/8) if ($failed == 1);
 		my $next_allowed = $sel_sta - $rwindow + 99*$at;
 		if ($new_start < $next_allowed){
 			print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
@@ -810,6 +810,11 @@ sub read_data{
 			$nconfirmed{$n} = 0;
 		}
 		$nacked{$n} = 0;
+		if ($fixed_packet_rate == 0){
+			$nperiod{$n} = random_exponential(1, $period);
+		}else{
+			$nperiod{$n} = $period;
+		}
 	}
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
