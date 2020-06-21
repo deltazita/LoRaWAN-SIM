@@ -245,7 +245,7 @@ while (1){
 					print "# gw $sel_gw will transmit an ack to $sel (RX$rwindow) (channel $rx2ch)\n" if ($debug == 1);
 					$gresponses{$sel_gw} += 1;
 					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $rx2ch, $rx2sf]);
-					$gdc{$sel_gw}{$rx2ch} = $ack_end+airtime($rx2sf, $overhead_d)*90;
+					$gdc{$sel_gw}{$rx2ch} = $ack_end+airtime($rx2sf, $overhead_d)*9;
 					my $new_name = $sel_gw.$gresponses{$sel_gw};
 					my $i = 0;
 					foreach my $el (@sorted_t){
