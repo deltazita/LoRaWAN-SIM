@@ -103,7 +103,7 @@ my $total_retrans = 0; # number of re-transm packets
 my $no_rx1 = 0; # no gw was available in RX1
 my $no_rx2 = 0; # no gw was available in RX1 or RX2
 my $picture = 0; # generate an energy consumption map
-my $fixed_packet_rate = 0; # enable / disable fixed packet rate for all nodes
+my $fixed_packet_rate = 1; # enable / disable fixed packet rate for all nodes
 
 my $progress = Term::ProgressBar->new({
 	name  => 'Progress',
@@ -168,7 +168,7 @@ while (1){
 				next if ($gdc{$gw}{$sel_ch} > ($sel_end+1));
 				my $is_available = 1;
 				foreach my $gu (@{$gunavailability{$gw}}){
-					my ($sta, $end, $ch, $sf) = @$gu;
+					my ($sta, $end, $ch, $sf, $m) = @$gu;
 					if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
 						$is_available = 0;
 						last;
@@ -184,7 +184,7 @@ while (1){
 				$rwindow = 1;
 				print "# gw $sel_gw will transmit an ack to $sel (RX$rwindow) (channel $sel_ch)\n" if ($debug == 1);
 				$gresponses{$sel_gw} += 1;
-				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf]);
+				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf, "d"]);
 				$gdc{$sel_gw}{$sel_ch} = $ack_end+airtime($sel_sf, $overhead_d)*99;
 				my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
 				# place new transmission at the correct position
@@ -207,7 +207,7 @@ while (1){
 						next if ($gdc{$gw}{$rx2ch} > ($sel_end+2));
 						my $is_available = 1;
 						foreach my $gu (@{$gunavailability{$gw}}){
-							my ($sta, $end, $ch, $sf) = @$gu;
+							my ($sta, $end, $ch, $sf, $m) = @$gu;
 							if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
 								$is_available = 0;
 								last;
@@ -225,7 +225,7 @@ while (1){
 						next if ($gdc{$gw}{$rx2ch} > ($sel_end+2));
 						my $is_available = 1;
 						foreach my $gu (@{$gunavailability{$gw}}){
-							my ($sta, $end, $ch, $sf) = @$gu;
+							my ($sta, $end, $ch, $sf, $m) = @$gu;
 							if ($ch == $rx2ch){
 								if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) || (($ack_sta == $sta) && ($ack_end == $end)) ){
 									$is_available = 0;
@@ -244,7 +244,7 @@ while (1){
 					$rwindow = 2;
 					print "# gw $sel_gw will transmit an ack to $sel (RX$rwindow) (channel $rx2ch)\n" if ($debug == 1);
 					$gresponses{$sel_gw} += 1;
-					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $rx2ch, $rx2sf]);
+					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $rx2ch, $rx2sf, "d"]);
 					$gdc{$sel_gw}{$rx2ch} = $ack_end+airtime($rx2sf, $overhead_d)*9;
 					my $new_name = $sel_gw.$gresponses{$sel_gw};
 					my $i = 0;
@@ -254,7 +254,7 @@ while (1){
 						$i += 1;
 					}
 					splice(@sorted_t, $i, 0, [$new_name, $ack_sta, $ack_end, $rx2ch, $rx2sf]);
-					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $rx2sf, $rwindow, $rx2ch, -1]);
+					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, -1]);
 				}else{
 					$no_rx2 += 1;
 					print "# no gateway is available\n" if ($debug == 1);
@@ -369,7 +369,7 @@ while (1){
 		my @indices = ();
 		my $index = 0;
 		foreach my $tuple (@{$gunavailability{$sel}}){
-			my ($sta, $end, $ch, $sf) = @$tuple;
+			my ($sta, $end, $ch, $sf, $m) = @$tuple;
 			push (@indices, $index) if ($end < $sel_sta);
 			$index += 1;
 		}
@@ -394,7 +394,7 @@ while (1){
 		my $G = rand(1);
 		my $d = distance($gcoords{$sel}[0], $ncoords{$dest}[0], $gcoords{$sel}[1], $ncoords{$dest}[1]);
 		my $prx = 14 - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
-		if ($prx < $sensis[$sf-7][bwconv($bw)]){
+		if ($prx < $sensis[$sel_sf-7][bwconv($bw)]){
 			print "# ack didn't reach node $dest\n" if ($debug == 1);
 			$failed = 1;
 		}
@@ -403,7 +403,7 @@ while (1){
 			last if ($sta > $sel_end);
 			my $nn = $n;
 			$n =~ s/[0-9].*// if ($n =~ /^[A-Z]/);
-			next if (($n eq $sel) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch_ != $ch)); # skip non-overlapping transmissions or different channels
+			next if (($n eq $sel) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch_ != $sel_ch)); # skip non-overlapping transmissions or different channels
 			
 			# time overlap
 			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
@@ -418,14 +418,14 @@ while (1){
 				if ($already_there == 0){
 					push(@{$overlaps{$sel}}, [$n, $G_, $sf_]); # put in here all overlapping transmissions
 				}
-				push(@{$overlaps{$nn}}, [$sel, $G, $sf]); # check future possible collisions with those transmissions
+				push(@{$overlaps{$nn}}, [$sel, $G, $sel_sf]); # check future possible collisions with those transmissions
 			}
 		}
 		foreach my $ng (@{$overlaps{$sel}}){
 			my ($n, $G_, $sf_) = @$ng;
 			my $overlap = 1;
 			# SF
-			if ($sf_ == $sf){
+			if ($sf_ == $sel_sf){
 				$overlap += 2;
 			}
 			# power 
@@ -440,25 +440,25 @@ while (1){
 			}
 			my $prx_ = $p - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
 			if ($overlap == 3){
-				if ((abs($prx - $prx_) <= $thresholds[$sf-7][$sf_-7]) ){ # both collide
+				if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
 					$failed = 1;
 					print "# ack collided together with $n at node $sel\n" if ($debug == 1);
 				}
-				if (($prx_ - $prx) > $thresholds[$sf-7][$sf_-7]){ # n suppressed sel
+				if (($prx_ - $prx) > $thresholds[$sel_sf-7][$sf_-7]){ # n suppressed sel
 					$failed = 1;
 					print "# ack surpressed by $n at node $dest\n" if ($debug == 1);
 				}
-				if (($prx - $prx_) > $thresholds[$sf_-7][$sf-7]){ # sel suppressed n
+				if (($prx - $prx_) > $thresholds[$sf_-7][$sel_sf-7]){ # sel suppressed n
 					print "# $n surpressed by $sel at node $dest\n" if ($debug == 1);
 				}
 			}
 			if (($overlap == 1) && ($full_collision == 1)){ # non-orthogonality
-				if (($prx - $prx_) > $thresholds[$sf-7][$sf_-7]){
-					if (($prx_ - $prx) <= $thresholds[$sf_-7][$sf-7]){
+				if (($prx - $prx_) > $thresholds[$sel_sf-7][$sf_-7]){
+					if (($prx_ - $prx) <= $thresholds[$sf_-7][$sel_sf-7]){
 						print "# $n surpressed by $sel at node $dest\n" if ($debug == 1);
 					}
 				}else{
-					if (($prx_ - $prx) > $thresholds[$sf_-7][$sf-7]){
+					if (($prx_ - $prx) > $thresholds[$sf_-7][$sel_sf-7]){
 						$failed = 1;
 						print "# ack surpressed by $n at node $dest\n" if ($debug == 1);
 					}else{
@@ -483,7 +483,7 @@ while (1){
 				$nresponse{$dest} = 1;
 				print "# transmit power of $dest is set to $Ptx_l[$pow]\n" if ($debug == 1);
 			}
-			$nconsumption{$dest} += airtime($sf, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
+			$nconsumption{$dest} += airtime($sel_sf, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
 		}else{ # ack was not received
 			if ($nretransmisssions{$dest} < $max_retr){
 				$nretransmisssions{$dest} += 1;
@@ -570,10 +570,10 @@ sub node_col{
 		# check if the gw is available for uplink
 		my $is_available = 1;
 		foreach my $gu (@{$gunavailability{$gw}}){
-			my ($sta, $end, $ch, $sf) = @$gu;
+			my ($sta, $end, $ch, $sf, $m) = @$gu;
 			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
 				# the gw has either locked to another transmission with the same ch/sf OR is being used for downlink
-				if ( (($sel_ch == $ch) && ($sel_sf == $sf)) || ($ch == $rx2ch) ){
+				if ( ($m eq "d") || (($m eq "u") && ($sel_ch == $ch) && ($sel_sf == $sf)) ){
 					$is_available = 0;
 					last;
 				}
@@ -697,7 +697,7 @@ sub node_col{
 			push (@gw_rc, [$gw, $prx]);
 			# set the gw unavailable (exclude preamble) and locked to the specific Ch/SF
 			my $pr_time = 2**$sel_sf/$bw;
-			push(@{$gunavailability{$gw}}, [$sel_sta+$pr_time, $sel_end, $sel_ch, $sel_sf]);
+			push(@{$gunavailability{$gw}}, [$sel_sta+$pr_time, $sel_end, $sel_ch, $sel_sf, "u"]);
 		}
 	}
 	@{$overlaps{$sel}} = ();
