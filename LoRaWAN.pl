@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2020.6.21                                      #
+#                                 v2020.6.23                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -44,6 +44,7 @@ my %nconfirmed = (); # confirmed transmissions or not
 my %nunique = (); # unique transmissions per node (equivalent to FCntUp)
 my %nacked = (); # unique acked packets (for confirmed transmissions) or just delivered (for non-confirmed transmissions)
 my %nperiod = (); # time period between two successive transmissions
+my %ndc = (); # duty cycle per channel
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -316,6 +317,9 @@ while (1){
 			if ($nconfirmed{$sel} == 1){
 				if ($nretransmisssions{$sel} < $max_retr){
 					$nretransmisssions{$sel} += 1;
+					my $new_ch = $channels[rand @channels];
+					$new_ch = $channels[rand @channels] while ($new_ch == $sel_ch);
+					$sel_ch = $new_ch;
 				}else{
 					$dropped += 1;
 					$nretransmisssions{$sel} = 0;
@@ -327,8 +331,8 @@ while (1){
 				$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 				# plan the next transmission at a random time as soon as the duty cycle permits that
 				$at = airtime($sel_sf);
-				$sel_sta = $sel_end + rand($nperiod{$sel}/8);
-				$sel_sta = $sel_end + 99*$at + rand(1) if ($sel_sta < ($sel_end + 99*$at));
+				$sel_sta = $sel_end + 2 + rand(3);
+				$sel_sta = $sel_end + 99*$at + rand(1) if ($sel_sta < ($ndc{$sel}{$sel_ch} + 99*$at));
 			}else{
 				$dropped += 1;
 				$nunique{$sel} += 1;
@@ -338,10 +342,11 @@ while (1){
 				my $next_allowed = $sel_end + 99*$at;
 				if ($sel_sta < $next_allowed){
 					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-					$sel_sta = $next_allowed;
+					$sel_sta = $next_allowed + rand(1);
 				}
 			}
 			$sel_end = $sel_sta+$at;
+			$ndc{$sel}{$sel_ch} = $sel_end;
 			# place the new transmission at the correct position
 			my $i = 0;
 			foreach my $el (@sorted_t){
@@ -487,6 +492,9 @@ while (1){
 		}else{ # ack was not received
 			if ($nretransmisssions{$dest} < $max_retr){
 				$nretransmisssions{$dest} += 1;
+				my $new_ch = $channels[rand @channels];
+				$new_ch = $channels[rand @channels] while ($new_ch == $ch);
+				$ch = $new_ch;
 			}else{
 				$dropped += 1;
 				$nretransmisssions{$dest} = 0;
@@ -505,13 +513,14 @@ while (1){
 		}
 		my $at = airtime($sf, $pl_u[$sf-7]+$extra_bytes);
 		my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
-		$new_start = $sel_sta - $rwindow + rand($nperiod{$dest}/8) if ($failed == 1);
-		my $next_allowed = $sel_sta - $rwindow + 99*$at;
+		$new_start = $sel_sta - $rwindow + 2 + rand(3) if ($failed == 1);
+		my $next_allowed = $ndc{$dest}{$ch} + 99*$at;
 		if ($new_start < $next_allowed){
 			print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-			$new_start = $next_allowed;
+			$new_start = $next_allowed + rand(1);
 		}
 		my $new_end = $new_start + $at;
+		$ndc{$dest}{$ch} = $new_end;
 		my $i = 0;
 		foreach my $el (@sorted_t){
 			my ($n, $sta, $end, $ch_, $sf_) = @$el;
@@ -814,6 +823,9 @@ sub read_data{
 			$nperiod{$n} = random_exponential(1, $period);
 		}else{
 			$nperiod{$n} = $period;
+		}
+		foreach my $ch (@channels){
+			$ndc{$n}{$ch} = -9999999999999;
 		}
 	}
 	foreach my $gw (@gateways){
