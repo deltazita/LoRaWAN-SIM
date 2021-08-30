@@ -34,35 +34,45 @@ If you want to cite the simulator, you can use the following bib entry:
 ## Usage:
 ```
 perl generate_terrain.pl terrain_side_size_(m) num_of_nodes num_of_gateways > terrain.txt
-perl LoRaWAN.pl packets_per_hour simulation_time(secs) terrain.txt
+perl LoRaWAN.pl packets_per_hour simulation_time(secs) ack_policy(1-3) terrain.txt
 ```
 
 ### Example with 1000x1000m terrain size, 100 nodes, 5 gateways, 1pkt/5min, ~3h sim time:
 ```
 perl generate_terrain.pl 1000 100 5 > terrain.txt
-perl LoRaWAN.pl 12 10000 terrain.txt
+perl LoRaWAN.pl 12 10000 2 terrain.txt
 ```
 
 ### Output sample:  
 ```
-Simulation time = 10000.130 secs
-Avg node consumption = 4.22738 mJ
-Min node consumption = 0.14028 mJ
-Max node consumption = 24.44699 mJ
-Total number of transmissions = 7425
-Total number of re-transmissions = 1457
-Total number of unique transmissions = 5968
-Total packets acknowledged = 5578
-Total packets dropped = 1
-Packet Delivery Ratio 1 = 0.93465
-Packet Delivery Ratio 2 = 0.80377
-No GW available in RX1 = 112 times
-No GW available in RX1 or RX2 = 21 times
-Script execution time = 34.3681 secs
+Simulation time = 10000.150 secs
+Avg node consumption = 47.85191 mJ
+Min node consumption = 20.75202 mJ
+Max node consumption = 97.19977 mJ
+Total number of transmissions = 91548
+Total number of re-transmissions = 77286
+Total number of unique transmissions = 19573
+Total packets delivered = 72176
+Total packets acknowledged = 13762
+Total confirmed dropped = 5311
+Total unconfirmed packets dropped = 0
+Packet Delivery Ratio = 0.70311
+Packet Reception Ratio = 0.78840
+No GW available in RX1 = 67393 times
+No GW available in RX1 or RX2 = 57897 times
+Total downlink time = 2840.29696000017 sec
+Script execution time = 5.5947 secs
 -----
-GW A sent out 1731 acks
-GW B sent out 722 acks
-GW C sent out 1129 acks
-GW D sent out 1340 acks
-GW E sent out 666 acks
-```
+GW A sent out 8033 acks
+GW B sent out 6246 acks
+Mean downlink fairness = 0.379
+Stdv of downlink fairness = 0.303
+-----
+# of nodes with SF7: 54
+# of nodes with SF8: 58
+# of nodes with SF9: 104
+# of nodes with SF10: 116
+# of nodes with SF11: 97
+# of nodes with SF12: 71
+Avg SF = 9.714
+````
