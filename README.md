@@ -1,6 +1,17 @@
 # LoRaWAN-SIM
 A LoRaWAN simulator for confirmed/unconfirmed transmissions and multiple gateways
 
+If you want to cite the simulator, you can use the following bib entry:
+
+@Article{zorbas2021optimal,  
+  AUTHOR = {Zorbas, Dimitrios and Caillouet, Christelle and Abdelfadeel Hassan, Khaled and Pesch, Dirk},  
+  TITLE = {Optimal Data Collection Time in LoRa Networks—A Time-Slotted Approach},  
+  JOURNAL = {Sensors},  
+  VOLUME = {21},  
+  YEAR = {2021},  
+  NUMBER = {4}  
+}
+
 ## Features:
 - Multiple half-duplex gateways
 - 1% radio duty cycle for uplink transmissions
