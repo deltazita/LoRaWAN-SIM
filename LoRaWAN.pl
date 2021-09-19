@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2021.8.30                                      #
+#                                 v2021.9.19                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -71,6 +71,7 @@ my @Ptx_w = (12 * 3.3 / 1000, 30 * 3.3 / 1000, 76 * 3.3 / 1000); # Ptx cons. for
 my $Prx_w = 46 * 3.3 / 1000;
 my $Pidle_w = 30 * 3.3 / 1000; # this is actually the consumption of the microcontroller in idle mode
 my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels
+my %band = (868100000=>"48", 868300000=>"48", 868500000=>"48", 867100000=>"47", 867300000=>"47", 867500000=>"47", 867700000=>"47", 867900000=>"47"); # band name per channel (all of them with 1% duty cycle)
 my $rx2sf = 9; # SF used for RX2 (LoRaWAN default = SF12, TTN uses SF9)
 my $rx2ch = 869525000; # channel used for RX2 (LoRaWAN default = 869.525MHz, TTN uses the same)
 
@@ -189,7 +190,7 @@ while (1){
 				print "# gw $sel_gw will transmit an ack to $sel (RX$rwindow) (channel $sel_ch)\n" if ($debug == 1);
 				$gresponses{$sel_gw} += 1;
 				push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf, "d"]);
-				$gdc{$sel_gw}{$sel_ch} = $ack_end+airtime($sel_sf, $overhead_d)*99;
+				$gdc{$sel_gw}{$band{$sel_ch}} = $ack_end+airtime($sel_sf, $overhead_d)*99;
 				my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
 				# place new transmission at the correct position
 				my $i = 0;
@@ -206,13 +207,14 @@ while (1){
 				$no_rx1 += 1;
 				($sel_gw, $sel_p) = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 2);
 				if (defined $sel_gw){
+					my $bnd = "54"; # band: 54 for 869525000
 					my ($ack_sta, $ack_end) = ($sel_end+2, $sel_end+2+airtime($rx2sf, $overhead_d));
 					$total_down_time += airtime($rx2sf, $overhead_d);
 					$rwindow = 2;
 					print "# gw $sel_gw will transmit an ack to $sel (RX$rwindow) (channel $rx2ch)\n" if ($debug == 1);
 					$gresponses{$sel_gw} += 1;
 					push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $rx2ch, $rx2sf, "d"]);
-					$gdc{$sel_gw}{$rx2ch} = $ack_end+airtime($rx2sf, $overhead_d)*9;
+					$gdc{$sel_gw}{$bnd} = $ack_end+airtime($rx2sf, $overhead_d)*9;
 					my $new_name = $sel_gw.$gresponses{$sel_gw};
 					my $i = 0;
 					foreach my $el (@sorted_t){
@@ -222,7 +224,7 @@ while (1){
 					}
 					$appacked{$sel} += 1 if ($sel_seq > $prev_seq{$sel});
 					splice(@sorted_t, $i, 0, [$new_name, $ack_sta, $ack_end, $rx2ch, $rx2sf, $appacked{$sel}]);
-					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, -1]);
+					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $rx2ch, -1]);
 				}else{
 					$no_rx2 += 1;
 					print "# no gateway is available\n" if ($debug == 1);
@@ -338,7 +340,7 @@ while (1){
 		
 		
 		$sel =~ s/[0-9].*//; # keep only the letter(s)
-		# reduce gunavailability population
+		# remove the examined tuple of gw unavailability
 		my @indices = ();
 		my $index = 0;
 		foreach my $tuple (@{$gunavailability{$sel}}){
@@ -350,7 +352,7 @@ while (1){
 			splice @{$gunavailability{$sel}}, $_, 1;
 		}
 		
-		# check if it collides with other transmissions
+		# look for the examined transmission and remove it from gdest
 		my $failed = 0;
 		$index = 0;
 		my ($dest, $st, $sf, $rwindow, $ch, $pow);
@@ -363,7 +365,7 @@ while (1){
 			$index += 1;
 		}
 		splice @{$gdest{$sel}}, $index, 1;
-		# first check if the transmission can reach the node
+		# check if the transmission can reach the node
 		my $G = rand(1);
 		my $d = distance($gcoords{$sel}[0], $ncoords{$dest}[0], $gcoords{$sel}[1], $ncoords{$dest}[1]);
 		my $prx = 14 - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
@@ -371,31 +373,23 @@ while (1){
 			print "# ack didn't reach node $dest\n" if ($debug == 1);
 			$failed = 1;
 		}
+		# check if transmission time overlaps with other transmissions
 		foreach my $tr (@sorted_t){
 			my ($n, $sta, $end, $ch_, $sf_, $seq) = @$tr;
 			last if ($sta > $sel_end);
-			my $nn = $n;
 			$n =~ s/[0-9].*// if ($n =~ /^[A-Z]/);
-			next if (($n eq $sel) || ($sta > $sel_end) || ($end < $sel_sta) || ($ch_ != $sel_ch)); # skip non-overlapping transmissions or different channels
+			next if (($n eq $sel) || ($end < $sel_sta) || ($ch_ != $ch)); # skip non-overlapping transmissions or different channels
 			
-			# time overlap
 			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
-				my $already_there = 0;
-				my $G_ = rand(1);
-				foreach my $ng (@{$overlaps{$sel}}){
-					my ($n_, $G_, $sf__) = @$ng;
-					if (($n_ eq $n) || ($n_ eq $nn)){
-						$already_there = 1;
-					}
-				}
-				if ($already_there == 0){
-					push(@{$overlaps{$sel}}, [$n, $G_, $sf_]); # put in here all overlapping transmissions
-				}
-				push(@{$overlaps{$nn}}, [$sel, $G, $sel_sf]); # check future possible collisions with those transmissions
+				push(@{$overlaps{$sel}}, [$n, $G, $sf_]); # put in here all overlapping transmissions
+				push(@{$overlaps{$n}}, [$sel, $G, $sel_sf]); # check future possible collisions with those transmissions
 			}
 		}
+		my %examined = ();
 		foreach my $ng (@{$overlaps{$sel}}){
 			my ($n, $G_, $sf_) = @$ng;
+			next if (exists $examined{$n});
+			$examined{$n} = 1;
 			my $overlap = 1;
 			# SF
 			if ($sf_ == $sel_sf){
@@ -461,18 +455,19 @@ while (1){
 		}else{ # ack was not received
 			if ($nretransmisssions{$dest} < $max_retr){
 				$nretransmisssions{$dest} += 1;
-				$ch = $channels[rand @channels];
 			}else{
 				$dropped += 1;
 				$nretransmisssions{$dest} = 0;
 				$nunique{$dest} += 1;
 				print "# $dest 's packet lost (no ack received)!\n" if ($debug == 1);
 			}
+			# $ch = $channels[rand @channels];
 			$nconsumption{$dest} += $preamble*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
 			$nconsumption{$dest} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 		}
 		@{$overlaps{$sel}} = ();
 		# plan next transmission
+		$ch = $channels[rand @channels];
 		my $extra_bytes = 0;
 		if ($nresponse{$dest} == 1){
 			$extra_bytes = $adr;
@@ -547,18 +542,20 @@ generate_picture() if ($picture == 1);
 sub gs_policy{ # gateway selection policy
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, $win) = @_;
 	my $sel_gw = undef;
+	my $bnd = $band{$sel_ch};
 	if ($win == 2){
+		$bnd = "54";
+		$sel_ch = $rx2ch;
 		if ($sel_sf < $rx2sf){
 			@$gw_rc = @{$nreachablegws{$sel}};
 		}
 		$sel_sf = $rx2sf;
-		$sel_ch = $rx2ch;
 	}
 	my ($ack_sta, $ack_end) = ($sel_end+$win, $sel_end+$win+airtime($sel_sf, $overhead_d));
 	my ($min_resp, $sel_p, $min_dc) = (1, -9999999999999, 9999999999999);
 	foreach my $g (@$gw_rc){
 		my ($gw, $p) = @$g;
-		next if ($gdc{$gw}{$sel_ch} > ($sel_end+$win));
+		next if ($gdc{$gw}{$bnd} > ($sel_end+$win));
 		my $is_available = 1;
 		foreach my $gu (@{$gunavailability{$gw}}){
 			my ($sta, $end, $ch, $sf, $m) = @$gu;
@@ -575,14 +572,14 @@ sub gs_policy{ # gateway selection policy
 				$sel_gw = $gw;
 				$sel_p = $p;
 			}
-		}elsif ($policy == 2){ # RSSI
+		}elsif (($policy == 2) || ($policy == 4)){ # RSSI
 			if ($p > $sel_p){
 				$sel_gw = $gw;
 				$sel_p = $p;
 			}
 		}elsif ($policy == 3){ # less busy gw
-			if ($gdc{$gw}{$sel_ch} < $min_dc){
-				$min_dc = $gdc{$gw}{$sel_ch};
+			if ($gdc{$gw}{$bnd} < $min_dc){
+				$min_dc = $gdc{$gw}{$bnd};
 				$sel_gw = $gw;
 				$sel_p = $p;
 			}
@@ -853,7 +850,10 @@ sub read_data{
 		$nacked{$n} = 0;
 		$prev_seq{$n} = 0;
 		if ($fixed_packet_rate == 0){
-			$nperiod{$n} = random_exponential(1, $period);
+			my @per = random_exponential(scalar keys @nodes, 2*$period);
+			foreach my $n (keys %ncoords){
+				$nperiod{$n} = pop(@per);
+			}
 		}else{
 			$nperiod{$n} = $period;
 		}
@@ -866,9 +866,9 @@ sub read_data{
 		$gcoords{$g} = [$x, $y];
 		@{$gunavailability{$g}} = ();
 		foreach my $ch (@channels){
-			$gdc{$g}{$ch} = 0;
+			$gdc{$g}{$band{$ch}} = 0;
 		}
-		$gdc{$g}{$rx2ch} = 0;
+		$gdc{$g}{"54"} = 0;
 		foreach my $n (keys %ncoords){
 			$surpressed{$n}{$g} = 0;
 		}
