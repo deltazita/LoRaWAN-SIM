@@ -224,7 +224,7 @@ while (1){
 					}
 					$appacked{$sel} += 1 if ($sel_seq > $prev_seq{$sel});
 					splice(@sorted_t, $i, 0, [$new_name, $ack_sta, $ack_end, $rx2ch, $rx2sf, $appacked{$sel}]);
-					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $rx2ch, -1]);
+					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $rx2sf, $rwindow, $rx2ch, -1]);
 				}else{
 					$no_rx2 += 1;
 					print "# no gateway is available\n" if ($debug == 1);
@@ -352,13 +352,14 @@ while (1){
 			splice @{$gunavailability{$sel}}, $_, 1;
 		}
 		
-		# look for the examined transmission and remove it from gdest
+		# look for the examined transmission in gdest, get some info, and then remove it 
 		my $failed = 0;
 		$index = 0;
-		my ($dest, $st, $sf, $rwindow, $ch, $pow);
+		# ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) information we already have
+		my ($dest, $st, $sf, $rwindow, $ch, $pow); # we also need dest, rwindow, and pow (the others should be the same)
 		foreach my $tup (@{$gdest{$sel}}){
 			my ($dest_, $st_, $sf_, $rwindow_, $ch_, $p_) = @$tup;
-			if ($st_ == $sel_sta){
+			if (($st_ == $sel_sta) && ($sf_ == $sel_sf) && ($ch_ == $sel_ch)){
 				($dest, $st, $sf, $rwindow, $ch, $pow) = ($dest_, $st_, $sf_, $rwindow_, $ch_, $p_);
 				last;
 			}
