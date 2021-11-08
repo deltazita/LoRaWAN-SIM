@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2021.9.19                                      #
+#                                 v2021.11.9                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
