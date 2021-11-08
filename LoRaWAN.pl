@@ -258,6 +258,18 @@ while (1){
 		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful transmission but no ack is required
 			$successful += 1;
 			$nacked{$sel} += 1;
+			
+			# remove the examined tuple of gw unavailability
+			foreach my $gwpr (@$gw_rc){
+				my ($gw, $pr) = @$gwpr;
+				my $index = 0;
+				foreach my $tuple (@{$gunavailability{$gw}}){
+					my ($sta, $end, $ch, $sf, $m) = @$tuple;
+					splice @{$gunavailability{$gw}}, $index, 1 if (($end == $sel_end) && ($ch == $sel_ch) && ($sf == $sel_sf) && ($m eq "u"));
+					last;
+				}
+			}
+			
 			my $at = airtime($sel_sf, $pl_u[$sel_sf-7]);
 			$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
 			my $next_allowed = $sel_end + 99*$at;
@@ -273,17 +285,17 @@ while (1){
 				last if ($sta > $sel_sta);
 				$i += 1;
 			}
-			$nunique{$sel} += 1;
+			$nunique{$sel} += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time;
 			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
-			$total_trans += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time
-			$total_retrans += 1 if (($sel_sta < $sim_time) && ($nconfirmed{$sel} == 1));
+			$total_trans += 1 ;
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w if ($sel_sta < $sim_time);
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w;
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
 		if ($failed == 1){
 			my $at = 0;
+			my $new_trans = 0;
 			if ($nconfirmed{$sel} == 1){
 				if ($nretransmisssions{$sel} < $max_retr){
 					$nretransmisssions{$sel} += 1;
@@ -293,7 +305,7 @@ while (1){
 				}else{
 					$dropped += 1;
 					$nretransmisssions{$sel} = 0;
-					$nunique{$sel} += 1;
+					$new_trans = 1;
 					print "# $sel 's packet lost!\n" if ($debug == 1);
 				}
 				# the node stays on only for the duration of the preamble for both receive windows
@@ -306,7 +318,7 @@ while (1){
 			}else{
 				$dropped_unc += 1;
 				$prev_seq{$sel} = $sel_seq;
-				$nunique{$sel} += 1;
+				$new_trans = 1;
 				print "# $sel 's packet lost!\n" if ($debug == 1);
 				$at = airtime($sel_sf, $pl_u[$sel_sf-7]);
 				$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
@@ -325,11 +337,14 @@ while (1){
 				last if ($sta > $sel_sta);
 				$i += 1;
 			}
+			if (($new_trans == 1) && ($sel_sta < $sim_time)){ # do not count transmissions that exceed the simulation time
+				$nunique{$sel} += 1;
+			}
 			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
-			$total_trans += 1;# if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time
-			$total_retrans += 1 if ($nconfirmed{$sel} == 1);# if (($sel_sta < $sim_time) && ($nconfirmed{$sel} == 1));
+			$total_trans += 1 ;
+			$total_retrans += 1 if ($nconfirmed{$sel} == 1);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w;# if ($sel_sta < $sim_time);
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w;
 		}
 		foreach my $g (keys %gcoords){
 			$surpressed{$sel}{$g} = 0;
@@ -436,11 +451,12 @@ while (1){
 				}
 			}
 		}
+		my $new_trans = 0;
 		if ($failed == 0){
 			print "# ack successfully received, $dest 's transmission has been acked\n" if ($debug == 1);
 			$nretransmisssions{$dest} = 0;
 			$nacked{$dest} += 1;
-			$nunique{$dest} += 1;
+			$new_trans = 1;
 			if ($rwindow == 2){ # also count the RX1 window
 				$nconsumption{$dest} += $preamble*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
 			}
@@ -459,7 +475,7 @@ while (1){
 			}else{
 				$dropped += 1;
 				$nretransmisssions{$dest} = 0;
-				$nunique{$dest} += 1;
+				$new_trans = 1;
 				print "# $dest 's packet lost (no ack received)!\n" if ($debug == 1);
 			}
 			# $ch = $channels[rand @channels];
@@ -481,6 +497,9 @@ while (1){
 		if ($new_start < $next_allowed){
 			print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
 			$new_start = $next_allowed;
+		}
+		if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
+			$nunique{$dest} += 1;
 		}
 		my $new_end = $new_start + $at;
 		$ndc{$dest}{$ch} = $new_end;
