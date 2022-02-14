@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2021.11.9                                      #
+#                                 v2022.2.13                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -60,7 +60,7 @@ my %gdest = (); # contains downlink information [node, sf, RX1/2, channel]
 
 # LoRa PHY and LoRaWAN parameters
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW
-my @thresholds = ([6,-16,-18,-19,-19,-20], [-24,6,-20,-22,-22,-22], [-27,-27,6,-23,-25,-25], [-30,-30,-30,6,-26,-28], [-33,-33,-33,-33,6,-29], [-36,-36,-36,-36,-36,6]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
+my @thresholds = ([1,-8,-9,-9,-9,-9], [-11,1,-11,-12,-13,-13], [-15,-13,1,-13,-14,-15], [-19,-18,-17,1,-17,-18], [-22,-22,-21,-20,1,-20], [-25,-25,-25,-24,-23,1]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
 my $var = 3.57; # variance
 my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
 my $max_retr = 8; # max number of retransmisssions per packet
@@ -592,7 +592,7 @@ sub gs_policy{ # gateway selection policy
 				$sel_gw = $gw;
 				$sel_p = $p;
 			}
-		}elsif (($policy == 2) || ($policy == 4)){ # RSSI
+		}elsif ($policy == 2){ # RSSI
 			if ($p > $sel_p){
 				$sel_gw = $gw;
 				$sel_p = $p;
