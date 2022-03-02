@@ -2,11 +2,11 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2022.2.13                                      #
+#                                 v2022.3.2                                       #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
-# -- 1% radio duty cycle for the nodes                                            #
+# -- 1% radio duty cycle per band for the nodes                                   #
 # -- 1 or 10% radio duty cycle for the gateways                                   #
 # -- Acks with two receive windows (RX1, RX2)                                     #
 # -- Non-orthogonal SF transmissions                                              #
@@ -29,7 +29,7 @@ use strict;
 use POSIX;
 use List::Util qw(min max sum);
 use Time::HiRes qw(time);
-use Math::Random qw(random_uniform random_exponential);
+use Math::Random qw(random_uniform random_exponential random_normal);
 use Term::ProgressBar 2.00;
 use GD::SVG;
 use Statistics::Basic qw(:all);
@@ -382,7 +382,7 @@ while (1){
 		}
 		splice @{$gdest{$sel}}, $index, 1;
 		# check if the transmission can reach the node
-		my $G = rand(1);
+		my $G = random_normal(1, 0, 1);
 		my $d = distance($gcoords{$sel}[0], $ncoords{$dest}[0], $gcoords{$sel}[1], $ncoords{$dest}[1]);
 		my $prx = 14 - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
 		if ($prx < $sensis[$sel_sf-7][bwconv($bw)]){
@@ -615,7 +615,7 @@ sub node_col{ # handle node collisions
 	foreach my $gw (keys %gcoords){
 		next if ($surpressed{$sel}{$gw} == 1);
 		my $d = distance($gcoords{$gw}[0], $ncoords{$sel}[0], $gcoords{$gw}[1], $ncoords{$sel}[1]);
-		my $G = rand(1);
+		my $G = random_normal(1, 0, 1);
 		my $prx = $Ptx_l[$nptx{$sel}] - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
 		if ($prx < $sensis[$sel_sf-7][bwconv($bw)]){
 			$surpressed{$sel}{$gw} = 1;
@@ -695,7 +695,7 @@ sub node_col{ # handle node collisions
 				# time overlap
 				if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
 					my $already_there = 0;
-					my $G_ = rand(1);
+					my $G_ = random_normal(1, 0, 1);
 					foreach my $ng (@{$overlaps{$sel}}){
 						my ($n_, $G_, $sf_) = @$ng;
 						if ($n_ eq $n){
@@ -761,21 +761,23 @@ sub node_col{ # handle node collisions
 
 sub min_sf{
 	my $n = shift;
-	my $G = rand(1);
+	my $G = 0; # assume that variance is 0
 	my $Xs = $var*$G;
-	my $sf = 0;
+	my $sf = 13;
 	my $bwi = bwconv($bw);
 	foreach my $gw (keys %gcoords){
+		my $gf = 13;
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
 		for (my $f=7; $f<=12; $f+=1){
 			my $S = $sensis[$f-7][$bwi];
 			my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
 			if (($Prx - 10) > $S){ # 10dBm tolerance
-				$sf = $f;
+				$gf = $f;
 				$f = 13;
 				last;
 			}
 		}
+		$sf = $gf if ($gf < $sf);
 	}
 	# check which gateways can be reached with rx2sf
 	foreach my $gw (keys %gcoords){
@@ -786,12 +788,12 @@ sub min_sf{
 			push(@{$nreachablegws{$n}}, [$gw, $Prx]);
 		}
 	}
-	if ($sf == 0){
+	if ($sf == 13){
 		print "node $n unreachable!\n";
 		print "terrain too large?\n";
 		exit;
 	}
-	# print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
+	print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
 	$sf_distr[$sf-7] += 1;
 	return $sf;
 }
