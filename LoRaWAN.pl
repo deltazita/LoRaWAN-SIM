@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2022.3.2                                       #
+#                                 v2022.4.19                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -50,6 +50,7 @@ my %nacked = (); # unique acked packets (for confirmed transmissions) or just de
 my %nperiod = (); 
 my %won = ();
 my %ndc = ();
+my %npkt = (); # packet size per node
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -76,7 +77,7 @@ my $rx2sf = 9; # SF used for RX2 (LoRaWAN default = SF12, TTN uses SF9)
 my $rx2ch = 869525000; # channel used for RX2 (LoRaWAN default = 869.525MHz, TTN uses the same)
 
 # packet specific parameters
-my @fpl = (51, 51, 51, 51, 51, 51); # uplink frame payload per SF (bytes)
+my @fpl = (222, 222, 115, 51, 51, 51); # max uplink frame payload per SF (bytes)
 my $preamble = 8; # in symbols
 my $H = 0; # header 0/1
 my $hcrc = 0; # HCRC bytes
@@ -90,7 +91,6 @@ my $fport_u = 1; # 1B for FPort for uplink
 my $fport_d = 0; # 0B for FPort for downlink (commands are included in Fopts, acks have no payload)
 my $overhead_u = $mhdr+$mic+$fhdr+$fport_u+$hcrc; # LoRa+LoRaWAN uplink overhead
 my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhead
-my @pl_u = ($fpl[0]+$overhead_u, $fpl[1]+$overhead_u, $fpl[2]+$overhead_u, $fpl[3]+$overhead_u, $fpl[4]+$overhead_u, $fpl[5]+$overhead_u); # uplink packet payload per SF (bytes)
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
@@ -115,6 +115,8 @@ my $total_down_time = 0; # total downlink time
 my $progress_bar = 0; # activate progress bar (slower!)
 my $avg_sf = 0;
 my @sf_distr = (0, 0, 0, 0, 0, 0);
+my $fixed_packet_size = 0; # all nodes have the same packet size defined in @fpl (=1) or a randomly selected (=0)
+my $avg_pkt = 0; # average packet size
 
 # application server
 my $policy = $ARGV[2]; # gateway selection policy for downlink traffic
@@ -142,11 +144,12 @@ foreach my $n (keys %ncoords){
 	my $start = random_uniform(1, 0, $period);
 	my $sf = min_sf($n);
 	$avg_sf += $sf;
-	my $stop = $start + airtime($sf);
+	$avg_pkt += $npkt{$n};
+	my $stop = $start + airtime($sf, $npkt{$n});
 	print "# $n will transmit from $start to $stop (SF $sf)\n" if ($debug == 1);
 	$nunique{$n} = 1;
 	push (@init_trans, [$n, $start, $stop, $channels[rand @channels], $sf, $nunique{$n}]);
-	$nconsumption{$n} += airtime($sf) * $Ptx_w[$nptx{$n}] + (airtime($sf)+1) * $Pidle_w; # +1sec for sensing
+	$nconsumption{$n} += airtime($sf, $npkt{$n}) * $Ptx_w[$nptx{$n}] + (airtime($sf, $npkt{$n})+1) * $Pidle_w; # +1sec for sensing
 	$total_trans += 1;
 }
 
@@ -270,7 +273,7 @@ while (1){
 				}
 			}
 			
-			my $at = airtime($sel_sf, $pl_u[$sel_sf-7]);
+			my $at = airtime($sel_sf, $npkt{$sel});
 			$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
 			my $next_allowed = $sel_end + 99*$at;
 			if ($sel_sta < $next_allowed){
@@ -289,7 +292,7 @@ while (1){
 			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			$total_trans += 1 ;
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w;
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
@@ -312,7 +315,7 @@ while (1){
 				$nconsumption{$sel} += $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
 				$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 				# plan the next transmission as soon as the duty cycle permits that
-				$at = airtime($sel_sf);
+				$at = airtime($sel_sf, $npkt{$sel});
 				$sel_sta = $sel_end + 2 + rand(3);
 				$sel_sta = $sel_end + 99*$at + rand(1) if ($sel_sta < ($ndc{$sel}{$sel_ch} + 99*$at));
 			}else{
@@ -320,7 +323,7 @@ while (1){
 				$prev_seq{$sel} = $sel_seq;
 				$new_trans = 1;
 				print "# $sel 's packet lost!\n" if ($debug == 1);
-				$at = airtime($sel_sf, $pl_u[$sel_sf-7]);
+				$at = airtime($sel_sf, $npkt{$sel});
 				$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
 				my $next_allowed = $sel_end + 99*$at;
 				if ($sel_sta < $next_allowed){
@@ -344,7 +347,7 @@ while (1){
 			$total_trans += 1 ;
 			$total_retrans += 1 if ($nconfirmed{$sel} == 1);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf)+1) * $Pidle_w;
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
 		}
 		foreach my $g (keys %gcoords){
 			$surpressed{$sel}{$g} = 0;
@@ -490,7 +493,7 @@ while (1){
 			$extra_bytes = $adr;
 			$nresponse{$dest} = 0;
 		}
-		my $at = airtime($sf, $pl_u[$sf-7]+$extra_bytes);
+		my $at = airtime($sf, $npkt{$dest}+$extra_bytes);
 		my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
 		$new_start = $sel_sta - $rwindow + rand(3) if ($failed == 1);
 		my $next_allowed = $ndc{$dest}{$ch} + 99*$at;
@@ -513,7 +516,7 @@ while (1){
 		$total_trans += 1;# if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
 		$total_retrans += 1 if ($failed == 1);# && ($new_start < $sim_time)); 
 		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
-		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf)+1) * $Pidle_w;# if ($new_start < $sim_time);
+		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf, $npkt{$dest})+1) * $Pidle_w;# if ($new_start < $sim_time);
 	}
 }
 # print "---------------------\n";
@@ -556,6 +559,7 @@ for (my $sf=7; $sf<=12; $sf+=1){
 	printf "# of nodes with SF%d: %d\n", $sf, $sf_distr[$sf-7];
 }
 printf "Avg SF = %.3f\n", $avg_sf/(scalar keys %ncoords);
+printf "Avg packet size = %.3f bytes\n", $avg_pkt/(scalar keys %ncoords);
 generate_picture() if ($picture == 1);
 
 
@@ -793,6 +797,11 @@ sub min_sf{
 		print "terrain too large?\n";
 		exit;
 	}
+	if ($fixed_packet_size == 0){
+		$npkt{$n} = int(rand($fpl[$sf-7])) + $overhead_u;
+	}else{
+		$npkt{$n} = $fpl[$sf-7] + $overhead_u;
+	}
 	print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
 	$sf_distr[$sf-7] += 1;
 	return $sf;
@@ -803,7 +812,6 @@ sub airtime{
 	my $sf = shift;
 	my $DE = 0;      # low data rate optimization enabled (=1) or not (=0)
 	my $payload = shift;
-	$payload = $pl_u[$sf-7] if (!defined $payload);
 	if (($bw == 125000) && (($sf == 11) || ($sf == 12))){
 		# low data rate optimization mandated for BW125 with SF11 and SF12
 		$DE = 1;
