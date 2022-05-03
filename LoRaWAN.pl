@@ -548,12 +548,11 @@ foreach my $g (sort keys %gcoords){
 }
 my @fairs = ();
 foreach my $n (keys %ncoords){
-# 	push(@fairs, $nacked{$n}/$nunique{$n});
+	next if ($nconfirmed{$n} == 0);
 	$appsuccess{$n} = 1 if ($appsuccess{$n} == 0);
 	push(@fairs, $appacked{$n}/$appsuccess{$n});
 }
-printf "Mean downlink fairness = %.3f\n", mean(\@fairs);
-printf "Stdv of downlink fairness = %.3f\n", stddev(\@fairs);
+printf "Downlink fairness = %.3f\n", stddev(\@fairs);
 print "-----\n";
 for (my $sf=7; $sf<=12; $sf+=1){
 	printf "# of nodes with SF%d: %d\n", $sf, $sf_distr[$sf-7];
