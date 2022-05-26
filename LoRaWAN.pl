@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2022.4.19                                      #
+#                                 v2022.5.28                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -116,6 +116,8 @@ my $progress_bar = 0; # activate progress bar (slower!)
 my $avg_sf = 0;
 my @sf_distr = (0, 0, 0, 0, 0, 0);
 my $fixed_packet_size = 0; # all nodes have the same packet size defined in @fpl (=1) or a randomly selected (=0)
+my $packet_size = 16; # default packet size if fixed_packet_size=1 or avg packet size if fixed_packet_size=0 (Bytes)
+my $packet_size_distr = "normal"; # uniform / normal (applicable if fixed_packet_size=0)
 my $avg_pkt = 0; # average packet size
 
 # application server
@@ -532,6 +534,7 @@ printf "Max node consumption = %.5f mJ\n", $max_cons;
 print "Total number of transmissions = $total_trans\n";
 print "Total number of re-transmissions = $total_retrans\n";
 printf "Total number of unique transmissions = %d\n", (sum values %nunique);
+printf "Stdv of unique transmissions = %.2f\n", stddev(values %nunique);
 print "Total packets delivered = $successful\n";
 printf "Total packets acknowledged = %d\n", (sum values %nacked);
 print "Total confirmed dropped = $dropped\n";
@@ -797,10 +800,16 @@ sub min_sf{
 		exit;
 	}
 	if ($fixed_packet_size == 0){
-		$npkt{$n} = int(rand($fpl[$sf-7])) + $overhead_u;
+		if ($packet_size_distr eq "uniform"){
+			$npkt{$n} = int(rand($fpl[$sf-7]));
+		}elsif ($packet_size_distr eq "normal"){
+			$npkt{$n} = int(random_normal(1, $packet_size, 10));
+		}
 	}else{
-		$npkt{$n} = $fpl[$sf-7] + $overhead_u;
+		$npkt{$n} = $packet_size;
 	}
+	$npkt{$n} = $fpl[$sf-7] if (($npkt{$n} > $fpl[$sf-7]) || ($npkt{$n} < 1));
+	$npkt{$n} += $overhead_u;
 	print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
 	$sf_distr[$sf-7] += 1;
 	return $sf;
@@ -879,7 +888,7 @@ sub read_data{
 		$nacked{$n} = 0;
 		$prev_seq{$n} = 0;
 		if ($fixed_packet_rate == 0){
-			my @per = random_exponential(scalar keys @nodes, 2*$period);
+			my @per = random_exponential(scalar keys @nodes, 2*$period); # other distributions may be used
 			foreach my $n (keys %ncoords){
 				$nperiod{$n} = pop(@per);
 			}
