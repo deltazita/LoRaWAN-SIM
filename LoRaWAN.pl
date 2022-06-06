@@ -34,7 +34,7 @@ use Term::ProgressBar 2.00;
 use GD::SVG;
 use Statistics::Basic qw(:all);
 
-die "usage: ./LoRaWAN.pl <packets_per_hour> <simulation_time(secs)> <gateway_selection_policy(1-3)> <terrain_file!>\n" unless (scalar @ARGV == 5);
+die "usage: ./LoRaWAN.pl <packets_per_hour> <simulation_time(secs)> <gateway_selection_policy(1-3)> <terrain_file!>\n" unless (scalar @ARGV == 4);
 
 # node attributes
 my %ncoords = (); # node coordinates
