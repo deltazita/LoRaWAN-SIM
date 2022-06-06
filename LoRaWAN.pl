@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2022.5.28                                      #
+#                                 v2022.6.6                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -34,12 +34,12 @@ use Term::ProgressBar 2.00;
 use GD::SVG;
 use Statistics::Basic qw(:all);
 
-die "usage: ./LoRaWAN.pl <packets_per_hour> <simulation_time(secs)> <gateway_selection_policy(1-3)> <terrain_file!>\n" unless (scalar @ARGV == 4);
+die "usage: ./LoRaWAN.pl <packets_per_hour> <simulation_time(secs)> <gateway_selection_policy(1-3)> <terrain_file!>\n" unless (scalar @ARGV == 5);
 
 # node attributes
 my %ncoords = (); # node coordinates
 my %nconsumption = (); # consumption
-my %nretransmisssions = (); # retransmisssions per node
+my %nretransmissions = (); # retransmissions per node (per packet)
 my %surpressed = ();
 my %nreachablegws = (); # reachable gws
 my %nptx = (); # transmit power index
@@ -48,9 +48,9 @@ my %nconfirmed = (); # confirmed transmissions or not
 my %nunique = (); # unique transmissions per node (equivalent to FCntUp)
 my %nacked = (); # unique acked packets (for confirmed transmissions) or just delivered (for non-confirmed transmissions)
 my %nperiod = (); 
-my %won = ();
 my %ndc = ();
 my %npkt = (); # packet size per node
+my %ntotretr = (); # number of retransmissions per node (total)
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -64,7 +64,7 @@ my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-1
 my @thresholds = ([1,-8,-9,-9,-9,-9], [-11,1,-11,-12,-13,-13], [-15,-13,1,-13,-14,-15], [-19,-18,-17,1,-17,-18], [-22,-22,-21,-20,1,-20], [-25,-25,-25,-24,-23,1]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
 my $var = 3.57; # variance
 my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
-my $max_retr = 8; # max number of retransmisssions per packet
+my $max_retr = 8; # max number of retransmissions per packet (default value = 1)
 my $bw = 125000; # channel bandwidth
 my $cr = 1; # Coding Rate
 my @Ptx_l = (2, 7, 14); # dBm
@@ -94,7 +94,7 @@ my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhe
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
-my $confirmed_perc = 1; # percentage of nodes that require confirmed transmissions
+my $confirmed_perc = 1; # percentage of nodes that require confirmed transmissions (1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $period = 3600/$ARGV[0]; # time period between transmissions
 my $sim_time = $ARGV[1]; # given simulation time
@@ -302,14 +302,15 @@ while (1){
 			my $at = 0;
 			my $new_trans = 0;
 			if ($nconfirmed{$sel} == 1){
-				if ($nretransmisssions{$sel} < $max_retr){
-					$nretransmisssions{$sel} += 1;
+				if ($nretransmissions{$sel} < $max_retr){
+					$nretransmissions{$sel} += 1;
 					my $new_ch = $channels[rand @channels];
 					$new_ch = $channels[rand @channels] while ($new_ch == $sel_ch);
 					$sel_ch = $new_ch;
 				}else{
 					$dropped += 1;
-					$nretransmisssions{$sel} = 0;
+					$ntotretr{$sel} += $nretransmissions{$sel};
+					$nretransmissions{$sel} = 0;
 					$new_trans = 1;
 					print "# $sel 's packet lost!\n" if ($debug == 1);
 				}
@@ -459,7 +460,8 @@ while (1){
 		my $new_trans = 0;
 		if ($failed == 0){
 			print "# ack successfully received, $dest 's transmission has been acked\n" if ($debug == 1);
-			$nretransmisssions{$dest} = 0;
+			$ntotretr{$dest} += $nretransmissions{$dest};
+			$nretransmissions{$dest} = 0;
 			$nacked{$dest} += 1;
 			$new_trans = 1;
 			if ($rwindow == 2){ # also count the RX1 window
@@ -473,13 +475,13 @@ while (1){
 				print "# transmit power of $dest is set to $Ptx_l[$pow]\n" if ($debug == 1);
 			}
 			$nconsumption{$dest} += airtime($sel_sf, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
-			delete $won{$dest} if (exists $won{$dest});
 		}else{ # ack was not received
-			if ($nretransmisssions{$dest} < $max_retr){
-				$nretransmisssions{$dest} += 1;
+			if ($nretransmissions{$dest} < $max_retr){
+				$nretransmissions{$dest} += 1;
 			}else{
 				$dropped += 1;
-				$nretransmisssions{$dest} = 0;
+				$ntotretr{$dest} += $nretransmissions{$dest};
+				$nretransmissions{$dest} = 0;
 				$new_trans = 1;
 				print "# $dest 's packet lost (no ack received)!\n" if ($debug == 1);
 			}
@@ -550,12 +552,17 @@ foreach my $g (sort keys %gcoords){
 	print "GW $g sent out $gresponses{$g} acks\n";
 }
 my @fairs = ();
+my $avgretr = 0;
 foreach my $n (keys %ncoords){
 	next if ($nconfirmed{$n} == 0);
 	$appsuccess{$n} = 1 if ($appsuccess{$n} == 0);
 	push(@fairs, $appacked{$n}/$appsuccess{$n});
+	$avgretr += $ntotretr{$n}/$nunique{$n};
+	#print "$n $ntotretr{$n} $nunique{$n} \n";
 }
 printf "Downlink fairness = %.3f\n", stddev(\@fairs);
+printf "Avg number of retransmissions = %.3f\n", $avgretr/(scalar keys %ntotretr);
+printf "Stdev of retransmissions = %.3f\n", (stddev values %ntotretr);
 print "-----\n";
 for (my $sf=7; $sf<=12; $sf+=1){
 	printf "# of nodes with SF%d: %d\n", $sf, $sf_distr[$sf-7];
@@ -876,7 +883,7 @@ sub read_data{
 		@{$overlaps{$n}} = ();
 		$nptx{$n} = scalar @Ptx_l - 1; # start with the highest Ptx
 		$nresponse{$n} = 0;
-		$nretransmisssions{$n} = 0;
+		$nretransmissions{$n} = 0;
 		if ($conf_num > 0){
 			$nconfirmed{$n} = 1;
 			$conf_num -= 1;
