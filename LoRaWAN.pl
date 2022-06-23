@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2022.6.6                                      #
+#                                 v2022.6.23                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -119,6 +119,7 @@ my $fixed_packet_size = 0; # all nodes have the same packet size defined in @fpl
 my $packet_size = 16; # default packet size if fixed_packet_size=1 or avg packet size if fixed_packet_size=0 (Bytes)
 my $packet_size_distr = "normal"; # uniform / normal (applicable if fixed_packet_size=0)
 my $avg_pkt = 0; # average packet size
+my %sorted_t = (); # keys = channels, values = list of nodes
 
 # application server
 my $policy = $ARGV[2]; # gateway selection policy for downlink traffic
@@ -156,14 +157,22 @@ foreach my $n (keys %ncoords){
 }
 
 # sort transmissions in ascending order
-my @sorted_t = sort { $a->[1] <=> $b->[1] } @init_trans;
+foreach my $t (sort { $a->[1] <=> $b->[1] } @init_trans){
+	my ($n, $sta, $end, $ch, $sf, $nuni) = @$t;
+	push (@{$sorted_t{$ch}}, $t);
+}
 undef @init_trans;
 
 # main loop
 while (1){
 	print "-------------------------------\n" if ($debug == 1);
 	# grab the earliest transmission
-	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@sorted_t)};
+	if (exists $sorted_t{$rx2ch}){
+		delete $sorted_t{$rx2ch} if (scalar @{$sorted_t{$rx2ch}} == 0);
+	}
+	my $min_ch = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t)[0];
+	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
+# 	print "$sel, $sel_sta, $sel_ch, $min_ch\n";
 	$next_update = $progress->update($sel_end) if ($progress_bar == 1);
 	if ($sel_sta > $sim_time){
 		if ($progress_bar == 1){
@@ -177,7 +186,7 @@ while (1){
 	
 	if ($sel =~ /^[0-9]/){ # if the packet is an uplink transmission
 		
-		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf); # check collisions and compute a list of gws that received the uplink pkt
+		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf); # check collisions and return a list of gws that received the uplink pkt
 		my $rwindow = 0;
 		my $failed = 0;
 		if ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 1)){ # if at least one gateway received the pkt -> successful transmission
@@ -199,13 +208,13 @@ while (1){
 				my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
 				# place new transmission at the correct position
 				my $i = 0;
-				foreach my $el (@sorted_t){
+				foreach my $el (@{$sorted_t{$sel_ch}}){
 					my ($n, $sta, $end, $ch, $sf, $seq) = @$el;
 					last if ($sta > $ack_sta);
 					$i += 1;
 				}
 				$appacked{$sel} += 1 if ($sel_seq > $prev_seq{$sel});
-				splice(@sorted_t, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $sel_sf, $appacked{$sel}]);
+				splice(@{$sorted_t{$sel_ch}}, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $sel_sf, $appacked{$sel}]);
 				push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, -1]);
 			}else{
 				# check RX2
@@ -222,13 +231,13 @@ while (1){
 					$gdc{$sel_gw}{$bnd} = $ack_end+airtime($rx2sf, $overhead_d)*9;
 					my $new_name = $sel_gw.$gresponses{$sel_gw};
 					my $i = 0;
-					foreach my $el (@sorted_t){
+					foreach my $el (@{$sorted_t{$rx2ch}}){
 						my ($n, $sta, $end, $ch, $sf, $seq) = @$el;
 						last if ($sta > $ack_sta);
 						$i += 1;
 					}
 					$appacked{$sel} += 1 if ($sel_seq > $prev_seq{$sel});
-					splice(@sorted_t, $i, 0, [$new_name, $ack_sta, $ack_end, $rx2ch, $rx2sf, $appacked{$sel}]);
+					splice(@{$sorted_t{$rx2ch}}, $i, 0, [$new_name, $ack_sta, $ack_end, $rx2ch, $rx2sf, $appacked{$sel}]);
 					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $rx2sf, $rwindow, $rx2ch, -1]);
 				}else{
 					$no_rx2 += 1;
@@ -285,13 +294,13 @@ while (1){
 			$sel_end = $sel_sta + $at;
 			# place the new transmission at the correct position
 			my $i = 0;
-			foreach my $el (@sorted_t){
+			foreach my $el (@{$sorted_t{$sel_ch}}){
 				my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
 				last if ($sta > $sel_sta);
 				$i += 1;
 			}
 			$nunique{$sel} += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time;
-			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
+			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			$total_trans += 1 ;
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
@@ -338,7 +347,7 @@ while (1){
 			$ndc{$sel}{$sel_ch} = $sel_end;
 			# place the new transmission at the correct position
 			my $i = 0;
-			foreach my $el (@sorted_t){
+			foreach my $el (@{$sorted_t{$sel_ch}}){
 				my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
 				last if ($sta > $sel_sta);
 				$i += 1;
@@ -346,7 +355,7 @@ while (1){
 			if (($new_trans == 1) && ($sel_sta < $sim_time)){ # do not count transmissions that exceed the simulation time
 				$nunique{$sel} += 1;
 			}
-			splice(@sorted_t, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
+			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			$total_trans += 1 ;
 			$total_retrans += 1 if ($nconfirmed{$sel} == 1);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
@@ -361,7 +370,7 @@ while (1){
 		
 		
 		$sel =~ s/[0-9].*//; # keep only the letter(s)
-		# remove the examined tuple of gw unavailability
+		# remove the unnecessary tuples from gw unavailability
 		my @indices = ();
 		my $index = 0;
 		foreach my $tuple (@{$gunavailability{$sel}}){
@@ -396,7 +405,7 @@ while (1){
 			$failed = 1;
 		}
 		# check if transmission time overlaps with other transmissions
-		foreach my $tr (@sorted_t){
+		foreach my $tr (@{$sorted_t{$ch}}){
 			my ($n, $sta, $end, $ch_, $sf_, $seq) = @$tr;
 			last if ($sta > $sel_end);
 			$n =~ s/[0-9].*// if ($n =~ /^[A-Z]/);
@@ -511,12 +520,12 @@ while (1){
 		my $new_end = $new_start + $at;
 		$ndc{$dest}{$ch} = $new_end;
 		my $i = 0;
-		foreach my $el (@sorted_t){
+		foreach my $el (@{$sorted_t{$ch}}){
 			my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
 			last if ($sta > $new_start);
 			$i += 1;
 		}
-		splice(@sorted_t, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}]);
+		splice(@{$sorted_t{$ch}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}]);
 		$total_trans += 1;# if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
 		$total_retrans += 1 if ($failed == 1);# && ($new_start < $sim_time)); 
 		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
@@ -652,7 +661,7 @@ sub node_col{ # handle node collisions
 			print "# gw not available for uplink (channel $sel_ch, SF $sel_sf)\n" if ($debug == 1);
 			next;
 		}
-		foreach my $tr (@sorted_t){
+		foreach my $tr (@{$sorted_t{$sel_ch}}){
 			my ($n, $sta, $end, $ch, $sf, $seq) = @$tr;
 			last if ($sta > $sel_end);
 			if ($n =~ /^[0-9]/){ # node transmission
@@ -763,7 +772,7 @@ sub node_col{ # handle node collisions
 		}
 		if ($surpressed{$sel}{$gw} == 0){
 			push (@gw_rc, [$gw, $prx]);
-			# set the gw unavailable (exclude preamble) and locked to the specific Ch/SF
+			# set the gw unavailable (exclude preamble) and lock to the specific Ch/SF
 			my $pr_time = 2**$sel_sf/$bw;
 			push(@{$gunavailability{$gw}}, [$sel_sta+$pr_time, $sel_end, $sel_ch, $sel_sf, "u"]);
 		}
