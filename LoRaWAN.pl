@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2022.6.23                                      #
+#                                 v2022.6.29                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -120,6 +120,8 @@ my $packet_size = 16; # default packet size if fixed_packet_size=1 or avg packet
 my $packet_size_distr = "normal"; # uniform / normal (applicable if fixed_packet_size=0)
 my $avg_pkt = 0; # average packet size
 my %sorted_t = (); # keys = channels, values = list of nodes
+my @recents = ();
+my $auto_simtime = 0; # 1 = the simulation will automatically stop (useful when sim_time>>10000)
 
 # application server
 my $policy = $ARGV[2]; # gateway selection policy for downlink traffic
@@ -166,10 +168,10 @@ undef @init_trans;
 # main loop
 while (1){
 	print "-------------------------------\n" if ($debug == 1);
-	# grab the earliest transmission
-	if (exists $sorted_t{$rx2ch}){
+	if (exists $sorted_t{$rx2ch}){ # avoid warnings in the next sorting
 		delete $sorted_t{$rx2ch} if (scalar @{$sorted_t{$rx2ch}} == 0);
 	}
+	# select the channel with earliest transmission among all first transmissions
 	my $min_ch = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t)[0];
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
 # 	print "$sel, $sel_sta, $sel_ch, $min_ch\n";
@@ -183,6 +185,20 @@ while (1){
 	}
 	print "# grabbed $sel, transmission from $sel_sta -> $sel_end\n" if ($debug == 1);
 	$sim_end = $sel_end;
+	if ($auto_simtime == 1){
+		my $nu = (sum values %nunique);
+		$nu = 1 if ($nu == 0);
+		if (scalar @recents < 50){
+			push(@recents, (sum values %nacked)/$nu);
+			#printf "stddev = %.5f\n", stddev(\@recents);
+		}else{
+			if (stddev(\@recents) < 0.00001){
+				print "### Continuing the simulation will not considerably affect the result! ###\n";
+				last;
+			}
+			shift(@recents);
+		}
+	}
 	
 	if ($sel =~ /^[0-9]/){ # if the packet is an uplink transmission
 		
@@ -548,7 +564,7 @@ printf "Total number of unique transmissions = %d\n", (sum values %nunique);
 printf "Stdv of unique transmissions = %.2f\n", stddev(values %nunique);
 print "Total packets delivered = $successful\n";
 printf "Total packets acknowledged = %d\n", (sum values %nacked);
-print "Total confirmed dropped = $dropped\n";
+print "Total confirmed packets dropped = $dropped\n";
 print "Total unconfirmed packets dropped = $dropped_unc\n";
 printf "Packet Delivery Ratio = %.5f\n", (sum values %nacked)/(sum values %nunique); # unique packets delivered / unique packets transmitted
 printf "Packet Reception Ratio = %.5f\n", $successful/$total_trans; # Global PRR
