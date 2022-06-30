@@ -2,7 +2,7 @@
 
 ###################################################################################
 #           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2022.6.29                                      #
+#                                 v2022.6.30                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -789,8 +789,9 @@ sub node_col{ # handle node collisions
 		if ($surpressed{$sel}{$gw} == 0){
 			push (@gw_rc, [$gw, $prx]);
 			# set the gw unavailable (exclude preamble) and lock to the specific Ch/SF
-			my $pr_time = 2**$sel_sf/$bw;
-			push(@{$gunavailability{$gw}}, [$sel_sta+$pr_time, $sel_end, $sel_ch, $sel_sf, "u"]);
+			my $Tsym = (2**$sel_sf)/$bw;
+			my $Tpream = ($preamble + 4.25)*$Tsym;
+			push(@{$gunavailability{$gw}}, [$sel_sta+$Tpream, $sel_end, $sel_ch, $sel_sf, "u"]);
 		}
 	}
 	@{$overlaps{$sel}} = ();
@@ -967,8 +968,8 @@ sub generate_picture{
 	foreach my $n (keys %ncoords){
 		my ($x, $y) = @{$ncoords{$n}};
 		($x, $y) = (int(($x * $display_x)/$norm_x), int(($y * $display_y)/$norm_y));
-# 		my $color = $im->colorAllocate(255*$nconsumption{$n}/$max_cons,0,0);
-		my $color = $im->colorAllocate(255*(min_sf($n)-7)/5,0,0);
+		my $color = $im->colorAllocate(255*$nconsumption{$n}/$max_cons,0,0);
+#		my $color = $im->colorAllocate(255*(min_sf($n)-7)/5,0,0);
 		$im->filledArc($x,$y,20,20,0,360,$color);
 	}
 	
