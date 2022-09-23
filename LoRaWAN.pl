@@ -1,8 +1,8 @@
 #!/usr/bin/perl -w
 
 ###################################################################################
-#           Event-based simulator for confirmed LoRaWAN transmissions             #
-#                                 v2022.6.30                                      #
+#          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
+#                                 v2022.9.23                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -118,7 +118,7 @@ my @sf_distr = (0, 0, 0, 0, 0, 0);
 my $fixed_packet_size = 0; # all nodes have the same packet size defined in @fpl (=1) or a randomly selected (=0)
 my $packet_size = 16; # default packet size if fixed_packet_size=1 or avg packet size if fixed_packet_size=0 (Bytes)
 my $packet_size_distr = "normal"; # uniform / normal (applicable if fixed_packet_size=0)
-my $avg_pkt = 0; # average packet size
+my $avg_pkt = 0; # actual average packet size
 my %sorted_t = (); # keys = channels, values = list of nodes
 my @recents = ();
 my $auto_simtime = 0; # 1 = the simulation will automatically stop (useful when sim_time>>10000)
@@ -573,22 +573,24 @@ print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 print "Total downlink time = $total_down_time sec\n";
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
 print "-----\n";
-foreach my $g (sort keys %gcoords){
-	print "GW $g sent out $gresponses{$g} acks\n";
+if ($confirmed_perc > 0){
+	foreach my $g (sort keys %gcoords){
+		print "GW $g sent out $gresponses{$g} acks\n";
+	}
+	my @fairs = ();
+	my $avgretr = 0;
+	foreach my $n (keys %ncoords){
+		next if ($nconfirmed{$n} == 0);
+		$appsuccess{$n} = 1 if ($appsuccess{$n} == 0);
+		push(@fairs, $appacked{$n}/$appsuccess{$n});
+		$avgretr += $ntotretr{$n}/$nunique{$n};
+		#print "$n $ntotretr{$n} $nunique{$n} \n";
+	}
+	printf "Downlink fairness = %.3f\n", stddev(\@fairs);
+	printf "Avg number of retransmissions = %.3f\n", $avgretr/(scalar keys %ntotretr);
+	printf "Stdev of retransmissions = %.3f\n", (stddev values %ntotretr);
+	print "-----\n";
 }
-my @fairs = ();
-my $avgretr = 0;
-foreach my $n (keys %ncoords){
-	next if ($nconfirmed{$n} == 0);
-	$appsuccess{$n} = 1 if ($appsuccess{$n} == 0);
-	push(@fairs, $appacked{$n}/$appsuccess{$n});
-	$avgretr += $ntotretr{$n}/$nunique{$n};
-	#print "$n $ntotretr{$n} $nunique{$n} \n";
-}
-printf "Downlink fairness = %.3f\n", stddev(\@fairs);
-printf "Avg number of retransmissions = %.3f\n", $avgretr/(scalar keys %ntotretr);
-printf "Stdev of retransmissions = %.3f\n", (stddev values %ntotretr);
-print "-----\n";
 for (my $sf=7; $sf<=12; $sf+=1){
 	printf "# of nodes with SF%d: %d\n", $sf, $sf_distr[$sf-7];
 }
