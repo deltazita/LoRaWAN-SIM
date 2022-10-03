@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                 v2022.9.23                                      #
+#                                 v2022.10.3                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -171,9 +171,15 @@ while (1){
 	if (exists $sorted_t{$rx2ch}){ # avoid warnings in the next sorting
 		delete $sorted_t{$rx2ch} if (scalar @{$sorted_t{$rx2ch}} == 0);
 	}
-	# select the channel with earliest transmission among all first transmissions
+	# select the channel with earliest transmission among all first transmissions (may give warnings for low # of nodes)
 	my $min_ch = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t)[0];
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
+	if (!defined $sel){
+		print "# Channel $min_ch has no transmissions in the queue!\n";
+		delete $sorted_t{$min_ch} if (scalar @{$sorted_t{$min_ch}} == 0);
+		$min_ch = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t)[0];
+		($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
+	}
 # 	print "$sel, $sel_sta, $sel_ch, $min_ch\n";
 	$next_update = $progress->update($sel_end) if ($progress_bar == 1);
 	if ($sel_sta > $sim_time){
@@ -267,7 +273,7 @@ while (1){
 				my $gap = $sel_p - $sensis[$sel_sf-7][bwconv($bw)];
 				my $new_ptx = undef;
 				foreach my $p (sort {$a<=>$b} @Ptx_l){
-					next if ($p >= $Ptx_l[$nptx{$sel}]); # we can only decrease power for the moment
+					next if ($p >= $Ptx_l[$nptx{$sel}]); # we can only decrease power at the moment
 					if ($gap-$Ptx_l[$nptx{$sel}]+$p >= 10){
 						$new_ptx = $p;
 						last;
@@ -317,7 +323,7 @@ while (1){
 			}
 			$nunique{$sel} += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time;
 			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
-			$total_trans += 1 ;
+			$total_trans += 1 if ($sel_sta < $sim_time);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
 		}else{ # non-successful transmission
@@ -542,7 +548,7 @@ while (1){
 			$i += 1;
 		}
 		splice(@{$sorted_t{$ch}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}]);
-		$total_trans += 1;# if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
+		$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
 		$total_retrans += 1 if ($failed == 1);# && ($new_start < $sim_time)); 
 		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
 		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf, $npkt{$dest})+1) * $Pidle_w;# if ($new_start < $sim_time);
@@ -559,7 +565,7 @@ printf "Avg node consumption = %.5f mJ\n", $avg_cons;
 printf "Min node consumption = %.5f mJ\n", $min_cons;
 printf "Max node consumption = %.5f mJ\n", $max_cons;
 print "Total number of transmissions = $total_trans\n";
-print "Total number of re-transmissions = $total_retrans\n";
+print "Total number of re-transmissions = $total_retrans\n" if ($confirmed_perc > 0);
 printf "Total number of unique transmissions = %d\n", (sum values %nunique);
 printf "Stdv of unique transmissions = %.2f\n", stddev(values %nunique);
 print "Total packets delivered = $successful\n";
