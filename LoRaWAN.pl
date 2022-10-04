@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                 v2022.10.3                                      #
+#                                 v2022.10.4                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -122,6 +122,7 @@ my $avg_pkt = 0; # actual average packet size
 my %sorted_t = (); # keys = channels, values = list of nodes
 my @recents = ();
 my $auto_simtime = 0; # 1 = the simulation will automatically stop (useful when sim_time>>10000)
+my %sf_retrans = (); # number of retransmissions per SF
 
 # application server
 my $policy = $ARGV[2]; # gateway selection policy for downlink traffic
@@ -260,7 +261,7 @@ while (1){
 					}
 					$appacked{$sel} += 1 if ($sel_seq > $prev_seq{$sel});
 					splice(@{$sorted_t{$rx2ch}}, $i, 0, [$new_name, $ack_sta, $ack_end, $rx2ch, $rx2sf, $appacked{$sel}]);
-					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $rx2sf, $rwindow, $rx2ch, -1]);
+					push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $rx2ch, -1]);
 				}else{
 					$no_rx2 += 1;
 					print "# no gateway is available\n" if ($debug == 1);
@@ -335,6 +336,7 @@ while (1){
 			if ($nconfirmed{$sel} == 1){
 				if ($nretransmissions{$sel} < $max_retr){
 					$nretransmissions{$sel} += 1;
+					$sf_retrans{$sel_sf} += 1;
 					my $new_ch = $channels[rand @channels];
 					$new_ch = $channels[rand @channels] while ($new_ch == $sel_ch);
 					$sel_ch = $new_ch;
@@ -408,10 +410,11 @@ while (1){
 		my $failed = 0;
 		$index = 0;
 		# ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) information we already have
+		# sel_sf = SF of the downlink, sf = SF of the corresponding uplink in gdest
 		my ($dest, $st, $sf, $rwindow, $ch, $pow); # we also need dest, rwindow, and pow (the others should be the same)
 		foreach my $tup (@{$gdest{$sel}}){
 			my ($dest_, $st_, $sf_, $rwindow_, $ch_, $p_) = @$tup;
-			if (($st_ == $sel_sta) && ($sf_ == $sel_sf) && ($ch_ == $sel_ch)){
+			if (($st_ == $sel_sta) && ($ch_ == $sel_ch)){
 				($dest, $st, $sf, $rwindow, $ch, $pow) = ($dest_, $st_, $sf_, $rwindow_, $ch_, $p_);
 				last;
 			}
@@ -509,6 +512,7 @@ while (1){
 		}else{ # ack was not received
 			if ($nretransmissions{$dest} < $max_retr){
 				$nretransmissions{$dest} += 1;
+				$sf_retrans{$sf} += 1;
 			}else{
 				$dropped += 1;
 				$ntotretr{$dest} += $nretransmissions{$dest};
@@ -598,7 +602,7 @@ if ($confirmed_perc > 0){
 	print "-----\n";
 }
 for (my $sf=7; $sf<=12; $sf+=1){
-	printf "# of nodes with SF%d: %d\n", $sf, $sf_distr[$sf-7];
+	printf "# of nodes with SF%d: %d, Avg retransmissions: %.2f\n", $sf, $sf_distr[$sf-7], $sf_retrans{$sf}/$sf_distr[$sf-7];
 }
 printf "Avg SF = %.3f\n", $avg_sf/(scalar keys %ncoords);
 printf "Avg packet size = %.3f bytes\n", $avg_pkt/(scalar keys %ncoords);
