@@ -602,7 +602,7 @@ if ($confirmed_perc > 0){
 	print "-----\n";
 }
 for (my $sf=7; $sf<=12; $sf+=1){
-	printf "# of nodes with SF%d: %d, Avg retransmissions: %.2f\n", $sf, $sf_distr[$sf-7], $sf_retrans{$sf}/$sf_distr[$sf-7];
+	printf "# of nodes with SF%d: %d, Avg retransmissions: %.2f\n", $sf, $sf_distr[$sf-7], $sf_retrans{$sf}/$sf_distr[$sf-7] if ($sf_distr[$sf-7] > 0);
 }
 printf "Avg SF = %.3f\n", $avg_sf/(scalar keys %ncoords);
 printf "Avg packet size = %.3f bytes\n", $avg_pkt/(scalar keys %ncoords);
