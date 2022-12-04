@@ -1,15 +1,28 @@
 # LoRaWAN-SIM
 A LoRaWAN simulator for confirmed/unconfirmed transmissions and multiple gateways
 
-If you want to cite the simulator, you can use the following bib entry:
+If you want to cite the simulator, you can use the following bib entries:
 
-@Article{zorbas2021optimal,  
-  AUTHOR = {Zorbas, Dimitrios and Caillouet, Christelle and Abdelfadeel Hassan, Khaled and Pesch, Dirk},  
-  TITLE = {Optimal Data Collection Time in LoRa Networks—A Time-Slotted Approach},  
-  JOURNAL = {Sensors},  
-  VOLUME = {21},  
-  YEAR = {2021},  
-  NUMBER = {4}  
+@article{zorbas2021optimal,
+  AUTHOR = {Zorbas, Dimitrios and Caillouet, Christelle and Abdelfadeel Hassan, Khaled and Pesch, Dirk},
+  TITLE = {{Optimal Data Collection Time in LoRa Networks—A Time-Slotted Approach}},
+  JOURNAL = {Sensors},
+  VOLUME = {21},
+  YEAR = {2021},
+  NUMBER = {4}
+}
+
+- Downlink policies:
+
+@inproceedings{zorbas2022policies,
+  author = {Javed, Shahzeb and Zorbas, Dimitrios},
+  title = {{LoRaWAN Downlink Policies for Improved Fairness}},
+  booktitle = {IEEE Conference on Standards for Communications and Networking (CSCN '22)},
+  year = {2022},
+  pages = {1--6},
+  month = {Nov},
+  location={Thessaloniki, Greece},
+  publisher={IEEE}
 }
 
 ## Features:
@@ -25,7 +38,7 @@ If you want to cite the simulator, you can use the following bib entry:
 - Proper header overhead
 - Node energy consumption calculation (uplink+downlink)
 - ADR (Tx power adjustment)
-- Gateway policies
+- Downlink policies
 - Adjustable packet size and rate
 
 ## Dependencies:
