@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                 v2022.12.2                                      #
+#                                 v2022.12.4                                      #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -18,7 +18,7 @@
 # -- Collision handling for both uplink and downlink transmissions                #
 # -- Energy consumption calculation (uplink+downlink)                             #
 # -- ADR support                                                                  #
-# -- Network server policies                                                      #
+# -- Network server policies (downlink packet & gw selection)                     #
 #                                                                                 #
 # author: Dr. Dimitrios Zorbas                                                    #
 # email: dimzorbas@ieee.org                                                       #
@@ -34,7 +34,11 @@ use Term::ProgressBar 2.00;
 use GD::SVG;
 use Statistics::Basic qw(:all);
 
-die "usage: ./LoRaWAN.pl <packets_per_hour> <simulation_time(secs)> <gateway_selection_policy(1-3)> <terrain_file!>\n" unless (scalar @ARGV == 4);
+die "usage: ./LoRaWAN.pl <packets_per_hour> <simulation_time(secs)> <gateway_selection_policy(0-5)> <terrain_file!>\n" unless (scalar @ARGV == 4);
+
+die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($ARGV[0] < 1);
+die "Simulation time must be longer than or equal to 1h\n" if ($ARGV[1] < 3600);
+die "Gateway selection policy must be between 0 and 5!\n" if (($ARGV[2] < 0) || ($ARGV[2] > 5));
 
 # node attributes
 my %ncoords = (); # node coordinates
@@ -126,9 +130,11 @@ my %sf_retrans = (); # number of retransmissions per SF
 
 # application server
 my $policy = $ARGV[2]; # gateway selection policy for downlink traffic
+$policy = 2 if ($policy == 0); # default value
 my %prev_seq = ();
 my %appacked = (); # counts the number of acked packets per node
 my %appsuccess = (); # counts the number of packets that received from at least one gw per node
+my %nogwavail = (); # counts how many time no gw was available (keys = nodes)
 
 my $progress;
 if ($progress_bar == 1){
@@ -265,6 +271,7 @@ while (1){
 				}else{
 					$no_rx2 += 1;
 					print "# no gateway is available\n" if ($debug == 1);
+					$nogwavail{$sel} += 1;
 					$failed = 1;
 				}
 			}
@@ -623,18 +630,46 @@ sub gs_policy{ # gateway selection policy
 	}
 	my ($ack_sta, $ack_end) = ($sel_end+$win, $sel_end+$win+airtime($sel_sf, $overhead_d));
 	my ($min_resp, $sel_p, $min_dc) = (1, -9999999999999, 9999999999999);
+	my @avail = ();
+	
 	foreach my $g (@$gw_rc){
 		my ($gw, $p) = @$g;
-		next if ($gdc{$gw}{$bnd} > ($sel_end+$win));
-		my $is_available = 1;
+		my $is_avail = 1;
+		if ($gdc{$gw}{$bnd} > ($sel_end+$win)){
+			next;
+		}
 		foreach my $gu (@{$gunavailability{$gw}}){
 			my ($sta, $end, $ch, $sf, $m) = @$gu;
 			if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) ){
-				$is_available = 0;
+				$is_avail = 0;
 				last;
 			}
 		}
-		next if ($is_available == 0);
+		next if ($is_avail == 0);
+		push (@avail, $g);
+		
+	}
+	return (undef, undef) if (scalar @avail == 0);
+	
+	if ($policy == 4){ # URCB
+		my $avgretr = (sum values %nogwavail)/(scalar keys %ncoords);
+		if ( ($nogwavail{$sel} < $avgretr) && ((scalar @avail)/(scalar @$gw_rc) < 2/3) ){
+			return (undef, undef);
+		}
+	}
+	if ($policy == 5){ # FBS
+		my $avgfair = 0;
+		foreach my $n (keys %ncoords){
+			next if ($appsuccess{$n} == 0);
+			$avgfair += $appacked{$n}/$appsuccess{$n};
+		}
+		$avgfair /= (scalar keys %ncoords);
+		if ( ($appacked{$sel}/$appsuccess{$sel} >= $avgfair) && ((scalar @avail)/(scalar @$gw_rc) < 2/3) && ($avgfair != 0) ){
+			return (undef, undef);
+		}
+	}
+	foreach my $g (@avail){
+		my ($gw, $p) = @$g;
 		if ($policy == 1){ # FCFS
 			my $resp = rand(2)/10;
 			if ($resp < $min_resp){
@@ -642,7 +677,7 @@ sub gs_policy{ # gateway selection policy
 				$sel_gw = $gw;
 				$sel_p = $p;
 			}
-		}elsif ($policy == 2){ # RSSI
+		}elsif (($policy == 2) || ($policy == 4) || ($policy == 5)){ # RSSI
 			if ($p > $sel_p){
 				$sel_gw = $gw;
 				$sel_p = $p;
@@ -932,6 +967,8 @@ sub read_data{
 		$appsuccess{$n} = 0;
 		$nacked{$n} = 0;
 		$prev_seq{$n} = 0;
+		$ntotretr{$n} = 0;
+		$nogwavail{$n} = 0;
 		if ($fixed_packet_rate == 0){
 			my @per = random_exponential(scalar keys @nodes, 2*$period); # other distributions may be used
 			foreach my $n (keys %ncoords){
