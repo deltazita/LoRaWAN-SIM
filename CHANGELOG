@@ -1,0 +1,8 @@
+CHANGELOG
+----------
+
+v2023.1.25
+* added a changelog file
+* added a US915 version (work in progress)
+* fixed the new channel selection after every transmission for unconfirmed traffic
+* fixed an uninitialized value in stats for unconfirmed traffic
