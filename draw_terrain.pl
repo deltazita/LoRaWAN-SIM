@@ -42,7 +42,7 @@ while(<FH>){
 	} elsif (/^# gateway coords: (.*)/){
 		my $sensor_coord = $1;
 		my @coords = split(/\] /, $sensor_coord);
-		@gws = map { /([0-9]+) \[([0-9]+\.[0-9]+) ([0-9]+\.[0-9]+)/; [$1, $2, $3]; } @coords;
+		@gws = map { /([A-Z]+) \[([0-9]+\.[0-9]+) ([0-9]+\.[0-9]+)/; [$1, $2, $3]; } @coords;
 	}
 }
 close(FH);
