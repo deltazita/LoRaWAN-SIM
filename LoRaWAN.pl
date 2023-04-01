@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                               v2023.1.25-EU868                                  #
+#                               v2023.4.1-EU868                                   #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -52,7 +52,7 @@ my %nconfirmed = (); # confirmed transmissions or not
 my %nunique = (); # unique transmissions per node (equivalent to FCntUp)
 my %nacked = (); # unique acked packets (for confirmed transmissions) or just delivered (for non-confirmed transmissions)
 my %nperiod = (); 
-my %ndc = ();
+my %ndc = (); # handles node radio duty cycle
 my %npkt = (); # packet size per node
 my %ntotretr = (); # number of retransmissions per node (total)
 
@@ -124,7 +124,7 @@ my $packet_size = 16; # default packet size if fixed_packet_size=1 or avg packet
 my $packet_size_distr = "normal"; # uniform / normal (applicable if fixed_packet_size=0)
 my $avg_pkt = 0; # actual average packet size
 my %sorted_t = (); # keys = channels, values = list of nodes
-my @recents = ();
+my @recents = (); # used in auto_simtime
 my $auto_simtime = 0; # 1 = the simulation will automatically stop (useful when sim_time>>10000)
 my %sf_retrans = (); # number of retransmissions per SF
 
@@ -175,19 +175,14 @@ undef @init_trans;
 # main loop
 while (1){
 	print "-------------------------------\n" if ($debug == 1);
-	if (exists $sorted_t{$rx2ch}){ # avoid warnings in the next sorting
-		delete $sorted_t{$rx2ch} if (scalar @{$sorted_t{$rx2ch}} == 0);
+	foreach my $ch (keys %sorted_t){
+		if (exists $sorted_t{$ch}){
+			delete $sorted_t{$ch} if (scalar @{$sorted_t{$ch}} == 0);
+		}
 	}
-	# select the channel with earliest transmission among all first transmissions (may give warnings for low # of nodes)
+	# select the channel with earliest transmission among all first transmissions
 	my $min_ch = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t)[0];
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
-	if (!defined $sel){
-		print "# Channel $min_ch has no transmissions in the queue!\n";
-		delete $sorted_t{$min_ch} if (scalar @{$sorted_t{$min_ch}} == 0);
-		$min_ch = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t)[0];
-		($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
-	}
-# 	print "$sel, $sel_sta, $sel_ch, $min_ch\n";
 	$next_update = $progress->update($sel_end) if ($progress_bar == 1);
 	if ($sel_sta > $sim_time){
 		if ($progress_bar == 1){
@@ -357,7 +352,7 @@ while (1){
 				$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 				# plan the next transmission as soon as the duty cycle permits that
 				$at = airtime($sel_sf, $npkt{$sel});
-				$sel_sta = $sel_end + 2 + rand(3);
+				$sel_sta = $sel_end + 2 + 1 + rand(2);
 				$sel_sta = $sel_end + 99*$at + rand(1) if ($sel_sta < ($ndc{$sel}{$sel_ch} + 99*$at));
 			}else{
 				$dropped_unc += 1;
@@ -539,7 +534,7 @@ while (1){
 		}
 		my $at = airtime($sf, $npkt{$dest}+$extra_bytes);
 		my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
-		$new_start = $sel_sta - $rwindow + rand(3) if ($failed == 1);
+		$new_start = $sel_sta - $rwindow + 2 + 1 + rand(2) if ($failed == 1);
 		my $next_allowed = $ndc{$dest}{$ch} + 99*$at;
 		if ($new_start < $next_allowed){
 			print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
