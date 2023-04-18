@@ -628,7 +628,6 @@ sub gs_policy{ # gateway selection policy
 		# this is always when rx2sf=12 but the sensitivity of SF12BW500 is higher than some other SF/BW combinations
 		# The second line is safe if we assume that the transmission power of the gws is 30dBm (see min_sf() ).
 		if ($sel_sf < $rx2sf){
-			print("$nreachablegws{$sel}");
 			@$gw_rc = @{$nreachablegws{$sel}};
 		}
 		$sel_sf = $rx2sf;
