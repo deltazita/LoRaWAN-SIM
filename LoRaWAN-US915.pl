@@ -180,14 +180,9 @@ undef @init_trans;
 # main loop
 while (1){
 	print "-------------------------------\n" if ($debug == 1);
-	foreach my $c (@channels){
-		if (exists $sorted_t{$c}){ # avoid warnings in the next sorting
-			delete $sorted_t{$c} if (scalar @{$sorted_t{$c}} == 0);
-		}
-	}
-	foreach my $c (@channels_d){
-		if (exists $sorted_t{$c}){ # avoid warnings in the next sorting
-			delete $sorted_t{$c} if (scalar @{$sorted_t{$c}} == 0);
+	foreach my $ch (keys %sorted_t){
+		if (exists $sorted_t{$ch}){
+			delete $sorted_t{$ch} if (scalar @{$sorted_t{$ch}} == 0);
 		}
 	}
 	# select the channel with earliest transmission among all first transmissions (may give warnings for low # of nodes)
@@ -200,7 +195,6 @@ while (1){
 		$min_ch = shift(@earliest);
 		($sel, $sel_sta, $sel_end, $sel_ch, $cb, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
 	}
-# 	print "$sel, $sel_sta, $sel_ch, $min_ch\n";
 	$next_update = $progress->update($sel_end) if ($progress_bar == 1);
 	if ($sel_sta > $sim_time){
 		if ($progress_bar == 1){
@@ -634,6 +628,7 @@ sub gs_policy{ # gateway selection policy
 		# this is always when rx2sf=12 but the sensitivity of SF12BW500 is higher than some other SF/BW combinations
 		# The second line is safe if we assume that the transmission power of the gws is 30dBm (see min_sf() ).
 		if ($sel_sf < $rx2sf){
+			print("$nreachablegws{$sel}");
 			@$gw_rc = @{$nreachablegws{$sel}};
 		}
 		$sel_sf = $rx2sf;
@@ -877,6 +872,7 @@ sub min_sf{
 		$sf = $gf if ($gf < $sf);
 	}
 	# check which gateways can be reached with rx2sf
+	@{$nreachablegws{$n}} = ();
 	foreach my $gw (keys %gcoords){
 		$bwi = bwconv($bw_500);
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
