@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                               v2023.4.1-EU868                                   #
+#                               v2023.6.6-EU868                                   #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -71,10 +71,11 @@ my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
 my $max_retr = 8; # max number of retransmissions per packet (default value = 1)
 my $bw = 125000; # channel bandwidth
 my $cr = 1; # Coding Rate
+my $volt = 3.3; # avg voltage
 my @Ptx_l = (2, 7, 14); # dBm
-my @Ptx_w = (12 * 3.3 / 1000, 30 * 3.3 / 1000, 76 * 3.3 / 1000); # Ptx cons. for 2, 7, 14dBm (mW)
-my $Prx_w = 46 * 3.3 / 1000;
-my $Pidle_w = 30 * 3.3 / 1000; # this is actually the consumption of the microcontroller in idle mode
+my @Ptx_w = (12 * $volt, 30 * $volt, 76 * $volt); # Ptx cons. for 2, 7, 14dBm (mA * V = mW)
+my $Prx_w = 46 * $volt;
+my $Pidle_w = 30 * $volt; # this is actually the consumption of the microcontroller in idle mode
 my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels
 my %band = (868100000=>"48", 868300000=>"48", 868500000=>"48", 867100000=>"47", 867300000=>"47", 867500000=>"47", 867700000=>"47", 867900000=>"47"); # band name per channel (all of them with 1% duty cycle)
 my $rx2sf = 9; # SF used for RX2 (LoRaWAN default = SF12, TTN uses SF9)
@@ -303,6 +304,9 @@ while (1){
 					last;
 				}
 			}
+			### TODO: ADR for unconfirmed transmissions
+			$nconsumption{$sel} += (2-$preamble*(2**$sel_sf)/$bw)*$Pidle_w + $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
+			$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 			
 			my $new_ch = $channels[rand @channels];
 			$new_ch = $channels[rand @channels] while ($new_ch == $sel_ch);
@@ -326,7 +330,7 @@ while (1){
 			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			$total_trans += 1 if ($sel_sta < $sim_time);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + ($at+1) * $Pidle_w;
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
@@ -347,8 +351,8 @@ while (1){
 					$new_trans = 1;
 					print "# $sel 's packet lost!\n" if ($debug == 1);
 				}
-				# the node stays on only for the duration of the preamble for both receive windows
-				$nconsumption{$sel} += $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
+				# the node stays on only for the duration of the preamble for both receive windows + in idle mode between RX windows
+				$nconsumption{$sel} += (2-$preamble*(2**$sel_sf)/$bw)*$Pidle_w + $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
 				$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 				# plan the next transmission as soon as the duty cycle permits that
 				$at = airtime($sel_sf, $npkt{$sel});
@@ -383,7 +387,7 @@ while (1){
 			$total_trans += 1 ;
 			$total_retrans += 1 if ($nconfirmed{$sel} == 1);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + (airtime($sel_sf, $npkt{$sel})+1) * $Pidle_w;
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + ($at+1) * $Pidle_w;
 		}
 		foreach my $g (keys %gcoords){
 			$surpressed{$sel}{$g} = 0;
@@ -499,7 +503,7 @@ while (1){
 			$nacked{$dest} += 1;
 			$new_trans = 1;
 			if ($rwindow == 2){ # also count the RX1 window
-				$nconsumption{$dest} += $preamble*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
+				$nconsumption{$dest} += (2-$preamble*(2**$sf)/$bw)*$Pidle_w + $preamble*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
 			}
 			my $extra_bytes = 0; # if an ADR request is included in the downlink packet
 			if ($pow != -1){
@@ -520,8 +524,7 @@ while (1){
 				$new_trans = 1;
 				print "# $dest 's packet lost (no ack received)!\n" if ($debug == 1);
 			}
-			# $ch = $channels[rand @channels];
-			$nconsumption{$dest} += $preamble*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
+			$nconsumption{$dest} += (2-$preamble*(2**$sf)/$bw)*$Pidle_w + $preamble*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
 			$nconsumption{$dest} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 		}
 		@{$overlaps{$sel}} = ();
@@ -553,9 +556,9 @@ while (1){
 		}
 		splice(@{$sorted_t{$ch}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}]);
 		$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
-		$total_retrans += 1 if ($failed == 1);# && ($new_start < $sim_time)); 
+		$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
 		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
-		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + (airtime($sf, $npkt{$dest})+1) * $Pidle_w;# if ($new_start < $sim_time);
+		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + ($at+1) * $Pidle_w if ($new_start < $sim_time);
 	}
 }
 # print "---------------------\n";
@@ -565,9 +568,9 @@ my $min_cons = min values %nconsumption;
 my $max_cons = max values %nconsumption;
 my $finish_time = time;
 printf "Simulation time = %.3f secs\n", $sim_end;
-printf "Avg node consumption = %.5f mJ\n", $avg_cons;
-printf "Min node consumption = %.5f mJ\n", $min_cons;
-printf "Max node consumption = %.5f mJ\n", $max_cons;
+printf "Avg node consumption = %.5f J\n", $avg_cons/1000;
+printf "Min node consumption = %.5f J\n", $min_cons/1000;
+printf "Max node consumption = %.5f J\n", $max_cons/1000;
 print "Total number of transmissions = $total_trans\n";
 print "Total number of re-transmissions = $total_retrans\n" if ($confirmed_perc > 0);
 printf "Total number of unique transmissions = %d\n", (sum values %nunique);

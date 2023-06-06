@@ -1,5 +1,8 @@
 CHANGELOG
 ----------
+v2023.6.6-EU868
+* fixed energy consumption prints
+* EDs stay in idle mode between reveive windows
 
 v2023.1.25
 * added a changelog file
