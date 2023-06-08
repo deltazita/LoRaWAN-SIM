@@ -305,8 +305,8 @@ while (1){
 				}
 			}
 			### TODO: ADR for unconfirmed transmissions
-			$nconsumption{$sel} += (2-$preamble*(2**$sel_sf)/$bw)*$Pidle_w + $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
-			$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
+			$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
+			$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 			
 			my $new_ch = $channels[rand @channels];
 			$new_ch = $channels[rand @channels] while ($new_ch == $sel_ch);
@@ -352,8 +352,8 @@ while (1){
 					print "# $sel 's packet lost!\n" if ($debug == 1);
 				}
 				# the node stays on only for the duration of the preamble for both receive windows + in idle mode between RX windows
-				$nconsumption{$sel} += (2-$preamble*(2**$sel_sf)/$bw)*$Pidle_w + $preamble*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
-				$nconsumption{$sel} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
+				$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
+				$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 				# plan the next transmission as soon as the duty cycle permits that
 				$at = airtime($sel_sf, $npkt{$sel});
 				$sel_sta = $sel_end + 2 + 1 + rand(2);
@@ -503,7 +503,7 @@ while (1){
 			$nacked{$dest} += 1;
 			$new_trans = 1;
 			if ($rwindow == 2){ # also count the RX1 window
-				$nconsumption{$dest} += (2-$preamble*(2**$sf)/$bw)*$Pidle_w + $preamble*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
+				$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
 			}
 			my $extra_bytes = 0; # if an ADR request is included in the downlink packet
 			if ($pow != -1){
@@ -524,8 +524,8 @@ while (1){
 				$new_trans = 1;
 				print "# $dest 's packet lost (no ack received)!\n" if ($debug == 1);
 			}
-			$nconsumption{$dest} += (2-$preamble*(2**$sf)/$bw)*$Pidle_w + $preamble*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
-			$nconsumption{$dest} += $preamble*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
+			$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
+			$nconsumption{$dest} += ($preamble+4.25)*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 		}
 		@{$overlaps{$sel}} = ();
 		# plan next transmission
