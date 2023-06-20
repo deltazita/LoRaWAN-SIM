@@ -356,7 +356,11 @@ while (1){
 				$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 				# plan the next transmission as soon as the duty cycle permits that
 				$at = airtime($sel_sf, $npkt{$sel});
-				$sel_sta = $sel_end + 2 + 1 + rand(2);
+				if ($new_trans == 0){
+					$sel_sta = $sel_end + 2 + 1 + rand(2);
+				}else{
+					$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
+				}
 				$sel_sta = $sel_end + 99*$at + rand(1) if ($sel_sta < ($ndc{$sel}{$sel_ch} + 99*$at));
 			}else{
 				$dropped_unc += 1;
