@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                               v2023.6.6-EU868                                   #
+#                               v2023.6.27-EU868                                  #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -359,7 +359,7 @@ while (1){
 				if ($new_trans == 0){
 					$sel_sta = $sel_end + 2 + 1 + rand(2);
 				}else{
-					$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
+					$sel_sta = $sel_end + 2 + $nperiod{$sel} + rand(1);
 				}
 				$sel_sta = $sel_end + 99*$at + rand(1) if ($sel_sta < ($ndc{$sel}{$sel_ch} + 99*$at));
 			}else{
@@ -541,7 +541,7 @@ while (1){
 		}
 		my $at = airtime($sf, $npkt{$dest}+$extra_bytes);
 		my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
-		$new_start = $sel_sta - $rwindow + 2 + 1 + rand(2) if ($failed == 1);
+		$new_start = $sel_sta - $rwindow + 2 + 1 + rand(2) if ($failed == 1 && $new_trans == 0);
 		my $next_allowed = $ndc{$dest}{$ch} + 99*$at;
 		if ($new_start < $next_allowed){
 			print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);

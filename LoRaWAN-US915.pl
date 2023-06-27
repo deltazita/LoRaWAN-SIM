@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                v2023.1.25-US                                    #
+#                                v2023.6.27-US                                    #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -70,9 +70,9 @@ my $bw_125 = 125000; # channel bandwidth
 my $bw_500 = 500000; # channel bandwidth
 my $cr = 1; # Coding Rate
 my @Ptx_l = (2, 7, 14, 20); # dBm
-my @Ptx_w = (12 * 3.3 / 1000, 30 * 3.3 / 1000, 76 * 3.3 / 1000, 95 * 3.3 / 1000); # Ptx cons. for 2, 7, 14, 20dBm (mW)
-my $Prx_w = 46 * 3.3 / 1000;
-my $Pidle_w = 30 * 3.3 / 1000; # this is actually the consumption of the microcontroller in idle mode
+my @Ptx_w = (12 * 3.3, 30 * 3.3, 76 * 3.3, 95 * 3.3); # Ptx cons. for 2, 7, 14, 20dBm (mW)
+my $Prx_w = 46 * 3.3;
+my $Pidle_w = 30 * 3.3; # this is actually the consumption of the microcontroller in idle mode
 my @channels = (902300000, 902500000, 902700000, 902900000, 903100000, 903300000, 903500000, 903700000, 903900000, 904100000, 904300000, 904500000, 904700000, 904900000, 905100000, 905300000, 905500000, 905700000, 905900000, 906100000, 906300000, 906500000, 906700000, 906900000, 907100000, 907300000, 907500000, 907700000, 907900000, 908100000, 908300000, 908500000, 908700000, 908900000, 909100000, 909300000, 909500000, 909700000, 909900000, 910100000, 910300000, 910500000, 910700000, 910900000, 911100000, 911300000, 911500000, 911700000, 911900000, 912100000, 912300000, 912500000, 912700000, 912900000, 913100000, 913300000, 913500000, 913700000, 913900000, 914100000, 914300000, 914500000, 914700000, 914900000, 903000000, 904600000, 906200000, 907800000, 909400000, 911000000, 912600000, 914200000); # 64x125kHz (only SF7-10) + 8x500kHz (only SF8) uplink channels
 my @channels_d = (923300000, 923900000, 924500000, 925100000, 925700000, 926300000, 926900000, 927500000); # 8x500kHz downlink channels (all SFs)
 my $rx2sf = 12; # SF used for RX2 (500kHz)
@@ -370,7 +370,11 @@ while (1){
 				$nconsumption{$sel} += $preamble*(2**$rx2sf)/($cb*1000) * ($Prx_w + $Pidle_w);
 				# plan the next transmission as soon as the duty cycle permits that
 				$at = airtime($sel_sf, $cb, $npkt{$sel});
-				$sel_sta = $sel_end + 2 + rand(3); # just some randomness
+				if ($new_trans == 0){
+					$sel_sta = $sel_end + 2 + rand(3); # just some randomness
+				}else{
+					$sel_sta = $sel_end + 2 + $nperiod{$sel} + rand(1);
+				}
 			}else{
 				$dropped_unc += 1;
 				$prev_seq{$sel} = $sel_seq;
@@ -550,7 +554,7 @@ while (1){
 		}
 		my $at = airtime($sf, $cb, $npkt{$dest}+$extra_bytes);
 		my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
-		$new_start = $sel_sta - $rwindow + rand(3) if ($failed == 1);
+		$new_start = $sel_sta - $rwindow + rand(3) if ($failed == 1 && $new_trans == 0);
 		if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
 			$nunique{$dest} += 1;
 		}
@@ -575,9 +579,9 @@ my $min_cons = min values %nconsumption;
 my $max_cons = max values %nconsumption;
 my $finish_time = time;
 printf "Simulation time = %.3f secs\n", $sim_end;
-printf "Avg node consumption = %.5f mJ\n", $avg_cons;
-printf "Min node consumption = %.5f mJ\n", $min_cons;
-printf "Max node consumption = %.5f mJ\n", $max_cons;
+printf "Avg node consumption = %.5f J\n", $avg_cons/1000;
+printf "Min node consumption = %.5f J\n", $min_cons/1000;
+printf "Max node consumption = %.5f J\n", $max_cons/1000;
 print "Total number of transmissions = $total_trans\n";
 print "Total number of re-transmissions = $total_retrans\n" if ($confirmed_perc > 0);
 printf "Total number of unique transmissions = %d\n", (sum values %nunique);
