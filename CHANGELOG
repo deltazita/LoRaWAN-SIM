@@ -1,5 +1,10 @@
 CHANGELOG
 ----------
+v2024.1.14
+* fixed some inconsistencies
+* added ADR support for unconfirmed traffic
+* some code refactoring
+
 v2023.6.27
 * fixed minor errors
 
