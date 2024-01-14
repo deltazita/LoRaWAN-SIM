@@ -1,6 +1,6 @@
 CHANGELOG
 ----------
-v2024.1.14
+v2024.1.14-EU868
 * fixed some inconsistencies
 * added ADR support for unconfirmed traffic
 * some code refactoring

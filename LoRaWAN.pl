@@ -50,7 +50,8 @@ my %nptx = (); # transmit power index
 my %nresponse = (); # 0/1 (1 = ADR response will be sent)
 my %nconfirmed = (); # confirmed transmissions or not
 my %nunique = (); # unique transmissions per node (equivalent to FCntUp)
-my %nacked = (); # unique acked packets (for confirmed transmissions) or just delivered (for non-confirmed transmissions)
+my %nacked = (); # unique acked packets (for confirmed transmissions)
+my %ndeliv = (); # unique delivered packets (for non-confirmed transmissions)
 my %nperiod = (); 
 my %ndc = (); # handles node radio duty cycle
 my %npkt = (); # packet size per node
@@ -99,7 +100,7 @@ my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhe
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
-my $confirmed_perc = 0.5; # percentage of nodes that require confirmed transmissions (1=all)
+my $confirmed_perc = 1; # percentage of nodes that require confirmed transmissions (1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $period = 3600/$ARGV[0]; # time period between transmissions
 my $sim_time = $ARGV[1]; # given simulation time
@@ -253,7 +254,7 @@ while (1){
 			$prev_seq{$sel} = $sel_seq;
 		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful transmission but no ack is required
 			$successful += 1;
-			$nacked{$sel} += 1;
+			$ndeliv{$sel} += 1;
 			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
 			### ADR for unconfirmed transmissions
 			if (scalar @{$powers{$sel}} == 10){
@@ -480,11 +481,13 @@ while (1){
 		}
 		my $new_trans = 0;
 		if ($failed == 0){
-			print "# ack successfully received, $dest 's transmission has been acked\n" if ($debug == 1);
-			$ntotretr{$dest} += $nretransmissions{$dest};
-			$nretransmissions{$dest} = 0;
-			$nacked{$dest} += 1;
-			$new_trans = 1;
+			if ($nconfirmed{$dest} == 1){
+				print "# ack successfully received, $dest 's transmission has been acked\n" if ($debug == 1);
+				$ntotretr{$dest} += $nretransmissions{$dest};
+				$nretransmissions{$dest} = 0;
+				$nacked{$dest} += 1;
+				$new_trans = 1;
+			}
 			if ($rwindow == 2){ # also count the RX1 window
 				$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
 			}
@@ -497,51 +500,55 @@ while (1){
 			}
 			$nconsumption{$dest} += airtime($sel_sf, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
 		}else{ # ack was not received
-			if ($nretransmissions{$dest} < $max_retr){
-				$nretransmissions{$dest} += 1;
-				$sf_retrans{$sf} += 1;
-			}else{
-				$dropped += 1;
-				$ntotretr{$dest} += $nretransmissions{$dest};
-				$nretransmissions{$dest} = 0;
-				$new_trans = 1;
-				print "# $dest 's packet lost (no ack received)!\n" if ($debug == 1);
+			if ($nconfirmed{$dest} == 1){
+				if ($nretransmissions{$dest} < $max_retr){
+					$nretransmissions{$dest} += 1;
+					$sf_retrans{$sf} += 1;
+				}else{
+					$dropped += 1;
+					$ntotretr{$dest} += $nretransmissions{$dest};
+					$nretransmissions{$dest} = 0;
+					$new_trans = 1;
+					print "# $dest 's packet lost (no ack received)!\n" if ($debug == 1);
+				}
 			}
 			$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
 			$nconsumption{$dest} += ($preamble+4.25)*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
 		}
 		@{$overlaps{$sel}} = ();
-		# plan next transmission
-		$ch = $channels[rand @channels];
-		my $extra_bytes = 0;
-		if ($nresponse{$dest} == 1){
-			$extra_bytes = $adr;
-			$nresponse{$dest} = 0;
+		if ($nconfirmed{$dest} == 1){
+			# plan next transmission
+			$ch = $channels[rand @channels];
+			my $extra_bytes = 0;
+			if ($nresponse{$dest} == 1){
+				$extra_bytes = $adr;
+				$nresponse{$dest} = 0;
+			}
+			my $at = airtime($sf, $npkt{$dest}+$extra_bytes);
+			my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
+			$new_start = $sel_sta - $rwindow + 2 + 1 + rand(2) if ($failed == 1 && $new_trans == 0);
+			my $next_allowed = $ndc{$dest}{$ch} + 99*$at;
+			if ($new_start < $next_allowed){
+				print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
+				$new_start = $next_allowed;
+			}
+			if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
+				$nunique{$dest} += 1;
+			}
+			my $new_end = $new_start + $at;
+			$ndc{$dest}{$ch} = $new_end;
+			my $i = 0;
+			foreach my $el (@{$sorted_t{$ch}}){
+				my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
+				last if ($sta > $new_start);
+				$i += 1;
+			}
+			splice(@{$sorted_t{$ch}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}]);
+			$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
+			$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
+			print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
+			$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + ($at+1) * $Pidle_w if ($new_start < $sim_time);
 		}
-		my $at = airtime($sf, $npkt{$dest}+$extra_bytes);
-		my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
-		$new_start = $sel_sta - $rwindow + 2 + 1 + rand(2) if ($failed == 1 && $new_trans == 0);
-		my $next_allowed = $ndc{$dest}{$ch} + 99*$at;
-		if ($new_start < $next_allowed){
-			print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-			$new_start = $next_allowed;
-		}
-		if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
-			$nunique{$dest} += 1;
-		}
-		my $new_end = $new_start + $at;
-		$ndc{$dest}{$ch} = $new_end;
-		my $i = 0;
-		foreach my $el (@{$sorted_t{$ch}}){
-			my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
-			last if ($sta > $new_start);
-			$i += 1;
-		}
-		splice(@{$sorted_t{$ch}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}]);
-		$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
-		$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
-		print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
-		$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + ($at+1) * $Pidle_w if ($new_start < $sim_time);
 	}
 }
 # print "---------------------\n";
@@ -562,7 +569,7 @@ print "Total packets delivered = $successful\n";
 printf "Total packets acknowledged = %d\n", (sum values %nacked);
 print "Total confirmed packets dropped = $dropped\n";
 print "Total unconfirmed packets dropped = $dropped_unc\n";
-printf "Packet Delivery Ratio = %.5f\n", (sum values %nacked)/(sum values %nunique); # unique packets delivered / unique packets transmitted
+printf "Packet Delivery Ratio = %.5f\n", ((sum values %nacked)+(sum values %ndeliv))/(sum values %nunique); # unique packets delivered / unique packets transmitted
 printf "Packet Reception Ratio = %.5f\n", $successful/$total_trans; # Global PRR
 print "No GW available in RX1 = $no_rx1 times\n";
 print "No GW available in RX1 or RX2 = $no_rx2 times\n";
@@ -984,14 +991,15 @@ sub read_data{
 		if ($conf_num > 0){
 			$nconfirmed{$n} = 1;
 			$conf_num -= 1;
+			$ntotretr{$n} = 0;
 		}else{
 			$nconfirmed{$n} = 0;
+			$ndeliv{$n} = 0;
 		}
+		$nacked{$n} = 0;
 		$appacked{$n} = 0;
 		$appsuccess{$n} = 0;
-		$nacked{$n} = 0;
 		$prev_seq{$n} = 0;
-		$ntotretr{$n} = 0;
 		$nogwavail{$n} = 0;
 		if ($fixed_packet_rate == 0){
 			my @per = random_exponential(scalar keys @nodes, 2*$period); # other distributions may be used
