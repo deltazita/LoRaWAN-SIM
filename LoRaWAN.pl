@@ -104,7 +104,7 @@ my $confirmed_perc = 1; # percentage of nodes that require confirmed transmissio
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $period = 3600/$ARGV[0]; # time period between transmissions
 my $sim_time = $ARGV[1]; # given simulation time
-my $debug = 1; # enable debug mode
+my $debug = 0; # enable debug mode
 my $sim_end = 0;
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side, normalised terrain side
 my $start_time = time; # just for statistics
@@ -571,23 +571,29 @@ print "Total confirmed packets dropped = $dropped\n";
 print "Total unconfirmed packets dropped = $dropped_unc\n";
 printf "Packet Delivery Ratio = %.5f\n", ((sum values %nacked)+(sum values %ndeliv))/(sum values %nunique); # unique packets delivered / unique packets transmitted
 printf "Packet Reception Ratio = %.5f\n", $successful/$total_trans; # Global PRR
+my @fairs = ();
+foreach my $n (keys %ncoords){
+	if ($nconfirmed{$n} == 0){
+		push(@fairs, $ndeliv{$n}/$nunique{$n});
+	}
+}
+printf "Uplink fairness = %.3f\n", stddev(\@fairs) if (scalar @fairs > 0); # for unconfirmed traffic
 print "No GW available in RX1 = $no_rx1 times\n";
 print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 print "Total downlink time = $total_down_time sec\n";
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
 print "-----\n";
-if ($confirmed_perc > 0){
+if (scalar keys %nconfirmed > 0){
 	foreach my $g (sort keys %gcoords){
 		print "GW $g sent out $gresponses{$g} acks and commands\n";
 	}
-	my @fairs = ();
+	@fairs = ();
 	my $avgretr = 0;
 	foreach my $n (keys %ncoords){
 		next if ($nconfirmed{$n} == 0);
 		$appsuccess{$n} = 1 if ($appsuccess{$n} == 0);
 		push(@fairs, $appacked{$n}/$appsuccess{$n});
 		$avgretr += $ntotretr{$n}/$nunique{$n};
-		#print "$n $ntotretr{$n} $nunique{$n} \n";
 	}
 	printf "Downlink fairness = %.3f\n", stddev(\@fairs);
 	printf "Avg number of retransmissions = %.3f\n", $avgretr/(scalar keys %ntotretr);
@@ -994,9 +1000,9 @@ sub read_data{
 			$ntotretr{$n} = 0;
 		}else{
 			$nconfirmed{$n} = 0;
-			$ndeliv{$n} = 0;
 		}
 		$nacked{$n} = 0;
+		$ndeliv{$n} = 0;
 		$appacked{$n} = 0;
 		$appsuccess{$n} = 0;
 		$prev_seq{$n} = 0;
