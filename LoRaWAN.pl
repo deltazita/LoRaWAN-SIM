@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                               v2024.1.14-EU868                                  #
+#                               v2024.3.27-EU868                                  #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -62,7 +62,7 @@ my %gcoords = (); # gw coordinates
 my %gunavailability = (); # unavailable gw time due to downlink or locked to another transmission
 my %gdc = (); # gw duty cycle (1% uplink channel is used for RX1, 10% downlink channel is used for RX2)
 my %gresponses = (); # acks carried out per gw
-my %gdest = (); # contains downlink information [node, sf, RX1/2, channel]
+my %gdest = (); # contains downlink information [node, sf, RX1/2, channel, power index]
 
 # LoRa PHY and LoRaWAN parameters
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW
@@ -185,6 +185,7 @@ while (1){
 	}
 	# select the channel with earliest transmission among all first transmissions
 	my $min_ch = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t)[0];
+	last if (!defined $min_ch);
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
 	$next_update = $progress->update($sel_end) if ($progress_bar == 1);
 	if ($sel_sta > $sim_time){
@@ -235,9 +236,8 @@ while (1){
 			# now we have to find which gateway (if any) can transmit an ack in RX1 or RX2
 			# check RX1
 			my $sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1);
-			my $extra_bytes = 0;
 			if (defined $sel_gw){
-				schedule_downlink($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 1, $extra_bytes, $new_index);
+				schedule_downlink($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 1, $new_index);
 			}else{
 				# check RX2
 				$no_rx1 += 1;
