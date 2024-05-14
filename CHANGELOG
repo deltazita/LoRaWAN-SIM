@@ -1,5 +1,8 @@
 CHANGELOG
 ----------
+v2024.5.14-EU868
+* fixed a bug with zero confirmed traffic
+
 v2024.3.27-EU868
 * minor fixes
 * added a sample terrain file
