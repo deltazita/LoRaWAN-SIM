@@ -66,7 +66,7 @@ foreach my $g (keys %gcoords){
 		my $f = 12;
 		my $S = $sensis[$f-7][$bwi];
 		my $Prx = 14 - ($Lpld0 + 10*$gamma * log10($d/$dref) + $Xs);
-		if (($Prx - 10) > $S){ # 10dBm tolerance
+		if (($Prx - 2) > $S){ # 10dBm tolerance
 			push(@{$gs{$g}}, 1);
 		}else{
 			push(@{$gs{$g}}, 0);
