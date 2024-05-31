@@ -54,47 +54,39 @@ perl generate_terrain.pl terrain_side_size_(m) num_of_nodes num_of_gateways > te
 perl LoRaWAN.pl packets_per_hour simulation_time_(hours) terrain.txt
 ```
 
-### Example with 1500x1500m terrain size, 100 nodes, 2 gateways, 1pkt/5min, ~3h sim time:
+### Example with 3000x3000m terrain size, 1000 nodes, 5 gateways, 1pkt/5min, 10h sim time:
 ```
-perl generate_terrain.pl 1500 100 2 > terrain.txt
+perl generate_terrain.pl 3000 1000 5 > terrain.txt
+(or perl generate_terrain.pl 3000 1000 > terrain.txt to automatically select the number of required gateways)
 perl LoRaWAN.pl 12 10 terrain.txt
 ```
 
 ### Output sample:  
 ```
-Simulation time = 9997.862 secs
-Avg node consumption = 7.95017 mJ
-Min node consumption = 5.84691 mJ
-Max node consumption = 13.48866 mJ
-Total number of transmissions = 4008
-Total number of re-transmissions = 592
-Total number of unique transmissions = 3316
-Stdv of unique transmissions = 0.39
-Total packets delivered = 3620
-Total packets acknowledged = 3316
+Simulation time = 35999.408 secs
+Avg node consumption = 50.50573 J
+Min node consumption = 32.32120 J
+Max node consumption = 157.91968 J
+Total number of transmissions = 119862
+Total number of unique transmissions = 119658
+Stdv of unique transmissions = 0.47
+Total packets delivered = 96832
+Total packets acknowledged = 0
 Total confirmed packets dropped = 0
-Total unconfirmed packets dropped = 0
-Packet Delivery Ratio = 1.00000
-Packet Reception Ratio = 0.90319
-No GW available in RX1 = 1944 times
-No GW available in RX1 or RX2 = 156 times
-Total downlink time = 509.405184000007 sec
-Script execution time = 0.2465 secs
+Total unconfirmed packets dropped = 22826
+Packet Delivery Ratio = 0.80924
+Packet Reception Ratio = 0.80924
+Uplink fairness = 0.088
+Script execution time = 6.2148 secs
 -----
-GW A sent out 1381 acks
-GW B sent out 2083 acks
-Downlink fairness = 0.038
-Avg number of retransmissions = 0.179
-Stdev of retransmissions = 5.633
------
-# of nodes with SF7: 18
-# of nodes with SF8: 21
-# of nodes with SF9: 18
-# of nodes with SF10: 31
-# of nodes with SF11: 7
-# of nodes with SF12: 5
-Avg SF = 9.030
-Avg packet size = 30.110 bytes
+# of nodes with SF7: 197, Avg retransmissions: 0.00
+# of nodes with SF8: 119, Avg retransmissions: 0.00
+# of nodes with SF9: 229, Avg retransmissions: 0.00
+# of nodes with SF10: 279, Avg retransmissions: 0.00
+# of nodes with SF11: 159, Avg retransmissions: 0.00
+# of nodes with SF12: 17, Avg retransmissions: 0.00
+Avg SF = 9.135
+Avg packet size = 35.912 bytes
 ````
 ### Generated image:
 <img src="https://user-images.githubusercontent.com/6707477/176494005-28cd637f-0faa-4ec4-a584-7b2e935c9a6e.svg" width="400" height="400">
