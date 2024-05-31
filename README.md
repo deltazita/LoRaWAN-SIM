@@ -51,13 +51,13 @@ Debian: apt install libmath-random-perl libgd-svg-perl libstatistics-basic-perl
 ## Usage:
 ```
 perl generate_terrain.pl terrain_side_size_(m) num_of_nodes num_of_gateways > terrain.txt
-perl LoRaWAN.pl packets_per_hour simulation_time(secs) ack_policy(1-3) terrain.txt
+perl LoRaWAN.pl packets_per_hour simulation_time_(hours) terrain.txt
 ```
 
 ### Example with 1500x1500m terrain size, 100 nodes, 2 gateways, 1pkt/5min, ~3h sim time:
 ```
 perl generate_terrain.pl 1500 100 2 > terrain.txt
-perl LoRaWAN.pl 12 10000 2 terrain.txt
+perl LoRaWAN.pl 12 10 terrain.txt
 ```
 
 ### Output sample:  
