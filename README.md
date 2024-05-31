@@ -1,28 +1,28 @@
 # LoRaWAN-SIM
 A LoRaWAN simulator for confirmed/unconfirmed transmissions and multiple gateways
 
-If you want to cite the simulator, you can use the following bib entries:
+The first version of the simulator was used here:
 
 @article{zorbas2021optimal,
-  AUTHOR = {Zorbas, Dimitrios and Caillouet, Christelle and Abdelfadeel Hassan, Khaled and Pesch, Dirk},
-  TITLE = {{Optimal Data Collection Time in LoRa Networks—A Time-Slotted Approach}},
-  JOURNAL = {Sensors},
-  VOLUME = {21},
-  YEAR = {2021},
-  NUMBER = {4}
+  AUTHOR = {Zorbas, Dimitrios and Caillouet, Christelle and Abdelfadeel Hassan, Khaled and Pesch, Dirk},<br />
+  TITLE = {{Optimal Data Collection Time in LoRa Networks—A Time-Slotted Approach}},<br />
+  JOURNAL = {Sensors},<br />
+  VOLUME = {21},<br />
+  YEAR = {2021},<br />
+  NUMBER = {4}<br />
 }
 
 - Downlink policies:
 
 @inproceedings{zorbas2022policies,
-  author = {Javed, Shahzeb and Zorbas, Dimitrios},
-  title = {{LoRaWAN Downlink Policies for Improved Fairness}},
-  booktitle = {IEEE Conference on Standards for Communications and Networking (CSCN '22)},
-  year = {2022},
-  pages = {1--6},
-  month = {Nov},
-  location={Thessaloniki, Greece},
-  publisher={IEEE}
+  author = {Javed, Shahzeb and Zorbas, Dimitrios},<br />
+  title = {{LoRaWAN Downlink Policies for Improved Fairness}},<br />
+  booktitle = {IEEE Conference on Standards for Communications and Networking (CSCN '22)},<br />
+  year = {2022},<br />
+  pages = {1--6},<br />
+  month = {Nov},<br />
+  location={Thessaloniki, Greece},<br />
+  publisher={IEEE}<br />
 }
 
 ## Features:
@@ -43,8 +43,10 @@ If you want to cite the simulator, you can use the following bib entries:
 
 ## Dependencies:
 - https://metacpan.org/pod/Math::Random
-- https://metacpan.org/pod/Term::ProgressBar
 - https://metacpan.org/pod/GD::SVG
+- https://metacpan.org/dist/Statistics-Basic/view/lib/Statistics/Basic.pod
+
+Debian: apt install libmath-random-perl libgd-svg-perl libstatistics-basic-perl
 
 ## Usage:
 ```
