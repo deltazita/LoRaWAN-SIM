@@ -52,6 +52,7 @@ for(my $i=1; $i<=$gws; $i++){
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW
 my $var = 3.57; # variance
 my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
+my $margin = 5; 
 my $bw = 125000; # channel bandwidth
 my %gs = ();
 my $G = 0; # assume that variance is 0
@@ -66,7 +67,7 @@ foreach my $g (keys %gcoords){
 		my $f = 12;
 		my $S = $sensis[$f-7][$bwi];
 		my $Prx = 14 - ($Lpld0 + 10*$gamma * log10($d/$dref) + $Xs);
-		if (($Prx - 2) > $S){ # 10dBm tolerance
+		if (($Prx - $margin) > $S){
 			push(@{$gs{$g}}, 1);
 		}else{
 			push(@{$gs{$g}}, 0);

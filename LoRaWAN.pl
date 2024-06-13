@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                               v2024.5.31-EU868                                  #
+#                               v2024.6.13-EU868                                  #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -65,15 +65,18 @@ my %gdest = (); # contains downlink information [node, sf, RX1/2, channel, power
 # LoRa PHY and LoRaWAN parameters
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW
 my @thresholds = ([1,-8,-9,-9,-9,-9], [-11,1,-11,-12,-13,-13], [-15,-13,1,-13,-14,-15], [-19,-18,-17,1,-17,-18], [-22,-22,-21,-20,1,-20], [-25,-25,-25,-24,-23,1]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
+my @snrs = (-7.5, -10, -12.5, -15, -17.5, -20);
+my $margin = 5;
 my $var = 3.57; # variance
 my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
+my $noise = -90; # noise level for snr calculation
 my $max_retr = 8; # max number of retransmissions per packet (default value = 1)
 my $bw = 125000; # channel bandwidth
 my $cr = 1; # Coding Rate
 my $volt = 3.3; # avg voltage
-my @Ptx_l = (2, 7, 14); # dBm
 my $Ptx_gw = 25; # gateway tx power (dBm)
-my @Ptx_w = (12 * $volt, 30 * $volt, 76 * $volt); # Ptx cons. for 2, 7, 14dBm (mA * V = mW)
+my @Ptx_l = (2, 5, 8, 11, 14); # dBm
+my @Ptx_w = (12*$volt, 20*$volt, 32*$volt, 51*$volt, 76*$volt); # Ptx cons. for 2, 5, 8, 11, and 14dBm (mA * V = mW)
 my $Prx_w = 46 * $volt;
 my $Pidle_w = 30 * $volt; # this is actually the consumption of the microcontroller in idle mode
 my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels
@@ -127,6 +130,7 @@ my %sorted_t = (); # keys = channels, values = list of nodes
 my @recents = (); # used in auto_simtime
 my $auto_simtime = 0; # 1 = the simulation will automatically stop (useful when sim_time>>10000)
 my %sf_retrans = (); # number of retransmissions per SF
+my $adr_on = 1; # ADR is used or not (=0)
 
 # application server
 my $policy = 1; # gateway selection policy for downlink traffic
@@ -202,20 +206,20 @@ while (1){
 		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf); # check collisions and return a list of gws that received the uplink pkt
 		my $rwindow = 0;
 		my $failed = 0;
-		# keep the last 10 max received powers
-		my $max_rss = -999;
+		# keep the last 20 max received powers
+		my $max_snr = -999;
 		foreach my $g (@$gw_rc){
-			$max_rss = @$g[1] if (@$g[1] > $max_rss);
+			my $snr = @$g[1] - $noise;
+			$max_snr = $snr if ($snr > $max_snr);
 		}
-		push (@{$powers{$sel}}, $max_rss) if ($max_rss > -999);
-		shift @{$powers{$sel}} if (scalar @{$powers{$sel}} > 10);
-		# do some ADR tests
-		my ($new_ptx, $new_index) = (undef, -1);
-		if (scalar @{$powers{$sel}} == 10){
-			($new_ptx, $new_index) = adr($sel, $sel_sf);
-		}
+		push (@{$powers{$sel}}, $max_snr) if ($max_snr > -999);
+		shift @{$powers{$sel}} if (scalar @{$powers{$sel}} > 20);
 		if ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 1)){ # if at least one gateway received the pkt -> successful transmission
 			$successful += 1;
+			my ($new_ptx, $new_index) = (undef, -1);
+			if (scalar @{$powers{$sel}} == 20){
+				($new_ptx, $new_index) = adr($sel, $sel_sf);
+			}
 			$appsuccess{$sel} += 1 if ($sel_seq > $prev_seq{$sel});
 			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
 			# now we have to find which gateway (if any) can transmit an ack in RX1 or RX2
@@ -244,7 +248,7 @@ while (1){
 			### ADR for unconfirmed transmissions
 			if (scalar @{$powers{$sel}} == 10){
 				my ($new_ptx, $new_index) = adr($sel, $sel_sf);
-				if (defined $new_ptx){
+				if ((defined $new_ptx) && ($adr_on == 1)){
 					my $sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1);
 					if (defined $sel_gw){
 						schedule_downlink($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 1, $new_index);
@@ -483,7 +487,7 @@ while (1){
 				$nptx{$dest} = $pow;
 				$extra_bytes = $adr;
 				$nresponse{$dest} = 1;
-				print "# transmit power of $dest is set to $Ptx_l[$pow]\n" if ($debug == 1);
+				print "# transmit power of $dest is set to $Ptx_l[$pow]dBm\n" if ($debug == 1);
 			}
 			$nconsumption{$dest} += airtime($sel_sf, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
 		}else{ # ack was not received
@@ -601,7 +605,7 @@ sub schedule_downlink{
 	$bnd = $band{$sel_ch} if ($rwindow == 1);
 	my $extra_bytes = 0;
 	if ($new_index != -1){
-		print "# it will be suggested that $sel changes tx power to $Ptx_l[$new_index]\n" if ($debug == 1);
+		print "# it will be suggested that $sel changes tx power to $Ptx_l[$new_index]dBm\n" if ($debug == 1);
 		$extra_bytes = $adr;
 	}
 	my $airt = airtime($sel_sf, $overhead_d+$extra_bytes);
@@ -702,18 +706,30 @@ sub gs_policy{ # gateway selection policy
 
 sub adr{ # ADR: the SF is already adjusted in min_sf; here only the transmit power is adjusted
 	my ($sel, $sel_sf) = @_;
-	my $avg_p = (sum @{$powers{$sel}})/10;
-	my $gap = $avg_p - $sensis[$sel_sf-7][bwconv($bw)];
-	my $new_ptx = undef;
-	my $new_index = -1;
-	foreach my $p (sort {$a<=>$b} @Ptx_l){
-		$new_index += 1;
-		next if ($p >= $Ptx_l[$nptx{$sel}]); # we can only decrease power at the moment
-		if ($gap-$Ptx_l[$nptx{$sel}]+$p >= 12){
-			$new_ptx = $p;
-			last;
+	my $m_snr = (max @{$powers{$sel}});
+	my $mgap = $m_snr - $snrs[$sel_sf-7] - $margin;
+	my $nstep = int($mgap/3);
+	my $new_ptx = $Ptx_l[$nptx{$sel}];
+	my $new_index = $nptx{$sel};
+	while ($nstep != 0){
+		if ($nstep > 0){
+			$new_ptx -= 3;
+			$new_index -= 1;
+			$nstep -= 1;
+			if ($new_ptx <= $Ptx_l[0]){
+				last;
+			}
+		}else{
+			if ($new_ptx < $Ptx_l[-1]){
+				$new_ptx += 3;
+				$nstep += 1;
+				$new_index += 1
+			}else{
+				last;
+			}
 		}
 	}
+	$new_ptx = undef if ($new_index == $nptx{$sel});
 	return ($new_ptx, $new_index);
 }
 
@@ -881,7 +897,7 @@ sub min_sf{
 		for (my $f=7; $f<=12; $f+=1){
 			my $S = $sensis[$f-7][$bwi];
 			my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
-			if (($Prx - 2) > $S){ # 2dBm tolerance
+			if (($Prx - $margin) > $S){
 				$gf = $f;
 				$f = 13;
 				last;
@@ -894,7 +910,7 @@ sub min_sf{
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
 		my $S = $sensis[$rx2sf-7][$bwi];
 		my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
-		if (($Prx - 2) > $S){ # 2dBm tolerance
+		if (($Prx - $margin) > $S){
 			push(@{$nreachablegws{$n}}, [$gw, $Prx]);
 		}
 	}

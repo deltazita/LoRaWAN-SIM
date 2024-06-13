@@ -1,6 +1,11 @@
 CHANGELOG
 ----------
-v2024.5.14-EU868
+v2024.6.13-EU868
+* fixed ADR mechanism
+* default db margin is set to 5
+* new test.txt file
+
+v2024.5.31-EU868
 * fixed an error with gateway unavailability
 * removed gateway selection policy from the list of arguments
 * the simulation time is now given in hours instead of seconds
