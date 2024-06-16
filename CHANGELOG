@@ -1,5 +1,8 @@
 CHANGELOG
 ----------
+v2024.6.16-EU868
+* added support for 8x2 channel gateways (enable by setting $double_gws=1)
+
 v2024.6.13-EU868
 * fixed ADR mechanism
 * default db margin is set to 5

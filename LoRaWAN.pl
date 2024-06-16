@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                               v2024.6.13-EU868                                  #
+#                               v2024.6.16-EU868                                  #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -33,7 +33,7 @@ use Math::Random qw(random_uniform random_exponential random_normal);
 use GD::SVG;
 use Statistics::Basic qw(:all);
 
-die "usage: ./LoRaWAN.pl <packets_per_hour> <simulation_time_(hours)> <terrain_file!>\n" unless (scalar @ARGV == 3);
+die "usage: ./$0 <packets_per_hour> <simulation_time_(hours)> <terrain_file!>\n" unless (scalar @ARGV == 3);
 
 die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($ARGV[0] < 1);
 die "Simulation time must be longer than or equal to 1h\n" if ($ARGV[1] < 1);
@@ -61,6 +61,7 @@ my %gunavailability = (); # unavailable gw time due to downlink or locked to ano
 my %gdc = (); # gw duty cycle (1% uplink channel is used for RX1, 10% downlink channel is used for RX2)
 my %gresponses = (); # acks carried out per gw
 my %gdest = (); # contains downlink information [node, sf, RX1/2, channel, power index]
+my %gdublicate = (); # exists if it's a double gw
 
 # LoRa PHY and LoRaWAN parameters
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW
@@ -131,6 +132,7 @@ my @recents = (); # used in auto_simtime
 my $auto_simtime = 0; # 1 = the simulation will automatically stop (useful when sim_time>>10000)
 my %sf_retrans = (); # number of retransmissions per SF
 my $adr_on = 1; # ADR is used or not (=0)
+my $double_gws = 0; # enable 8x2 channel gateways
 
 # application server
 my $policy = 1; # gateway selection policy for downlink traffic
@@ -438,6 +440,7 @@ while (1){
 				$p = $Ptx_l[$nptx{$n}];
 			}else{
 				$d_ = distance($ncoords{$dest}[0], $gcoords{$n}[0], $ncoords{$dest}[1], $gcoords{$n}[1]);
+				$d_ = 0.2 if ($d_ == 0);
 				$p = $Ptx_gw;
 			}
 			my $prx_ = $p - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
@@ -841,6 +844,7 @@ sub node_col{ # handle node collisions
 					}
 					# power 
 					my $d_ = distance($gcoords{$gw}[0], $gcoords{$n}[0], $gcoords{$gw}[1], $gcoords{$n}[1]);
+					$d_ = 0.2 if ($d_ == 0);
 					my $prx_ = $Ptx_gw - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
 					if ($overlap == 3){
 						if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
@@ -892,6 +896,7 @@ sub min_sf{
 	my $sf = 13;
 	my $bwi = bwconv($bw);
 	foreach my $gw (keys %gcoords){
+		next if (exists $gdublicate{$gw});
 		my $gf = 13;
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
 		for (my $f=7; $f<=12; $f+=1){
@@ -1023,6 +1028,18 @@ sub read_data{
 		}
 		@{$powers{$n}} = ();
 	}
+	@gateways = sort { $a->[0] cmp $b->[0] } @gateways;
+	my $last_gw = $gateways[-1][0];
+	my @dublicates = ();
+	if ($double_gws == 1){
+		foreach my $gw (@gateways){
+			my ($g, $x, $y) = @$gw;
+			my $gdb = ++$last_gw;
+			push (@dublicates, [$gdb, $x, $y]);
+			$gdublicate{$gdb} = 1;
+		}
+	}
+	@gateways = (@gateways, @dublicates);
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
 		$gcoords{$g} = [$x, $y];
@@ -1068,12 +1085,13 @@ sub generate_picture{
 	}
 	
 	foreach my $g (keys %gcoords){
+		next if (exists $gdublicate{$g});
 		my ($x, $y) = @{$gcoords{$g}};
 		($x, $y) = (int(($x * $display_x)/$norm_x), int(($y * $display_y)/$norm_y));
 		$im->rectangle($x-5, $y-5, $x+5, $y+5, $red);
 		$im->string(gdGiantFont,$x-2,$y-20,$g,$blue);
 	}
-	my $output_file = $ARGV[3]."-img.svg";
+	my $output_file = $ARGV[-1]."-img.svg";
 	open(FILEOUT, ">$output_file") or die "could not open file $output_file for writing!";
 	binmode FILEOUT;
 	print FILEOUT $im->svg;
