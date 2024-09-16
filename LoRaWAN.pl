@@ -111,7 +111,6 @@ my $debug = 0; # enable debug mode
 my $sim_end = 0;
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side, normalised terrain side
 my $start_time = time; # just for statistics
-my $successful = 0; # number of delivered packets (not necessarily acked)
 my $dropped = 0; # number of dropped packets (for confirmed traffic)
 my $dropped_unc = 0; # number of dropped packets (for unconfirmed traffic)
 my $total_trans = 0; # number of transm. packets
@@ -142,6 +141,7 @@ my %appsuccess = (); # counts the number of packets that received from at least 
 my %nogwavail = (); # counts how many time no gw was available (keys = nodes)
 my %powers = (); # contains last 10 received powers per node
 
+my %nattempts  = ();
 
 read_data(); # read terrain file
 
@@ -217,7 +217,6 @@ while (1){
 		push (@{$powers{$sel}}, $max_snr) if ($max_snr > -999);
 		shift @{$powers{$sel}} if (scalar @{$powers{$sel}} > 20);
 		if ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 1)){ # if at least one gateway received the pkt -> successful transmission
-			$successful += 1;
 			$ndeliv{$sel} += 1;
 			my ($new_ptx, $new_index) = (undef, -1);
 			if (scalar @{$powers{$sel}} == 20){
@@ -245,7 +244,6 @@ while (1){
 			}
 			$prev_seq{$sel} = $sel_seq;
 		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful transmission but no ack is required
-			$successful += 1;
 			$ndeliv{$sel} += 1;
 			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
 			### ADR for unconfirmed transmissions
@@ -361,10 +359,10 @@ while (1){
 			}
 			if (($new_trans == 1) && ($sel_sta < $sim_time)){ # do not count transmissions that exceed the simulation time
 				$nunique{$sel} += 1;
+				$total_retrans += 1 if ($nconfirmed{$sel} == 1);
 			}
+			$total_trans += 1 if ($sel_sta < $sim_time);
 			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
-			$total_trans += 1 ;
-			$total_retrans += 1 if ($nconfirmed{$sel} == 1);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + ($at+1) * $Pidle_w;
 		}
@@ -479,9 +477,8 @@ while (1){
 			if ($nconfirmed{$dest} == 1){
 				print "# ack successfully received, $dest 's transmission has been acked\n" if ($debug == 1);
 				$ntotretr{$dest} += $nretransmissions{$dest};
-				$nretransmissions{$dest} = 0;
 				$nacked{$dest} += 1;
-				$ndeliv{$dest} -= 1;
+				$nretransmissions{$dest} = 0;
 				$new_trans = 1;
 			}
 			if ($rwindow == 2){ # also count the RX1 window
@@ -561,12 +558,12 @@ print "Total number of transmissions = $total_trans\n";
 print "Total number of re-transmissions = $total_retrans\n" if ($confirmed_perc > 0);
 printf "Total number of unique transmissions = %d\n", (sum values %nunique);
 printf "Stdv of unique transmissions = %.2f\n", stddev(values %nunique);
-print "Total packets delivered = $successful\n";
+print "Total packets delivered = (sum values %ndeliv)\n"; # total packets received (but may not be acked)
 printf "Total packets acknowledged = %d\n", (sum values %nacked);
 print "Total confirmed packets dropped = $dropped\n";
 print "Total unconfirmed packets dropped = $dropped_unc\n";
-printf "Packet Delivery Ratio = %.5f\n", ((sum values %nacked)+(sum values %ndeliv))/(sum values %nunique); # unique packets delivered / unique packets transmitted
-printf "Packet Reception Ratio = %.5f\n", (sum values %ndeliv)/$total_trans;
+printf "Packet Delivery Ratio = %.5f\n", (sum values %nacked)/(sum values %nunique); # unique packets acked / unique packets transmitted
+printf "Packet Reception Ratio = %.5f\n", (sum values %ndeliv)/$total_trans; # total packets received / total packets transmitted
 my @fairs = ();
 foreach my $n (keys %ncoords){
 	if ($nconfirmed{$n} == 0){
