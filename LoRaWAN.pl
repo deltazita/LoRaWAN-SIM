@@ -481,6 +481,7 @@ while (1){
 				$ntotretr{$dest} += $nretransmissions{$dest};
 				$nretransmissions{$dest} = 0;
 				$nacked{$dest} += 1;
+				$ndeliv{$dest} -= 1;
 				$new_trans = 1;
 			}
 			if ($rwindow == 2){ # also count the RX1 window
@@ -564,7 +565,7 @@ print "Total packets delivered = $successful\n";
 printf "Total packets acknowledged = %d\n", (sum values %nacked);
 print "Total confirmed packets dropped = $dropped\n";
 print "Total unconfirmed packets dropped = $dropped_unc\n";
-printf "Packet Delivery Ratio = %.5f\n", (sum values %nacked)/(sum values %nunique); # unique packets delivered / unique packets transmitted
+printf "Packet Delivery Ratio = %.5f\n", ((sum values %nacked)+(sum values %ndeliv))/(sum values %nunique); # unique packets delivered / unique packets transmitted
 printf "Packet Reception Ratio = %.5f\n", (sum values %ndeliv)/$total_trans;
 my @fairs = ();
 foreach my $n (keys %ncoords){
