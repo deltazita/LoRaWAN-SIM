@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                               v2024.6.16-EU868                                  #
+#                               v2024.9.16-EU868                                  #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -71,7 +71,6 @@ my $margin = 5;
 my $var = 3.57; # variance
 my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
 my $noise = -90; # noise level for snr calculation
-my $max_retr = 8; # max number of retransmissions per packet (default value = 1)
 my $bw = 125000; # channel bandwidth
 my $cr = 1; # Coding Rate
 my $volt = 3.3; # avg voltage
@@ -105,6 +104,7 @@ my %overlaps = (); # handles special packet overlaps
 # simulation parameters
 my $confirmed_perc = 0; # percentage of nodes that require confirmed transmissions (1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
+my $max_retr = 1; # max number of retransmissions per packet (default value = 1)
 my $period = 3600/$ARGV[0]; # time period between transmissions
 my $sim_time = $ARGV[1]*3600; # given simulation time
 my $debug = 0; # enable debug mode
@@ -182,7 +182,7 @@ while (1){
 	if (exists $ncoords{$sel}){ # just a progress trick
 		if ($sel == 1){
 			$| = 1;
-			printf "%.2f%%\r", 100*$sel_end/$sim_time;
+			printf STDERR "%.2f%%\r", 100*$sel_end/$sim_time;
 		}
 	}
 	last if ($sel_sta > $sim_time);
@@ -218,6 +218,7 @@ while (1){
 		shift @{$powers{$sel}} if (scalar @{$powers{$sel}} > 20);
 		if ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 1)){ # if at least one gateway received the pkt -> successful transmission
 			$successful += 1;
+			$ndeliv{$sel} += 1;
 			my ($new_ptx, $new_index) = (undef, -1);
 			if (scalar @{$powers{$sel}} == 20){
 				($new_ptx, $new_index) = adr($sel, $sel_sf);
@@ -563,8 +564,8 @@ print "Total packets delivered = $successful\n";
 printf "Total packets acknowledged = %d\n", (sum values %nacked);
 print "Total confirmed packets dropped = $dropped\n";
 print "Total unconfirmed packets dropped = $dropped_unc\n";
-printf "Packet Delivery Ratio = %.5f\n", ((sum values %nacked)+(sum values %ndeliv))/(sum values %nunique); # unique packets delivered / unique packets transmitted
-printf "Packet Reception Ratio = %.5f\n", (sum values %ndeliv)/(sum values %nunique);
+printf "Packet Delivery Ratio = %.5f\n", (sum values %nacked)/(sum values %nunique); # unique packets delivered / unique packets transmitted
+printf "Packet Reception Ratio = %.5f\n", (sum values %ndeliv)/$total_trans;
 my @fairs = ();
 foreach my $n (keys %ncoords){
 	if ($nconfirmed{$n} == 0){

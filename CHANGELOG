@@ -1,5 +1,8 @@
 CHANGELOG
 ----------
+v2024.9.16-EU868
+* fixed the PRR calculation when confirmed transmissions are enabled
+
 v2024.6.16-EU868
 * added support for 8x2 channel gateways (enable by setting $double_gws=1)
 
