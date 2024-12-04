@@ -104,7 +104,7 @@ my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhe
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
-my $confirmed_perc = 1; # percentage of nodes that require confirmed transmissions (1=all)
+my $confirmed_perc = 0; # percentage of nodes that require confirmed transmissions (1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $max_retr = 1; # max number of retransmissions per packet (default value = 1)
 my $period = 3600/$ARGV[0]; # time period between transmissions
