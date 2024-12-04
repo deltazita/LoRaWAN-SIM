@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                               v2024.9.16-EU868                                  #
+#                               v2024.12.4-EU868                                  #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -33,7 +33,7 @@ use Math::Random qw(random_uniform random_exponential random_normal);
 use GD::SVG;
 use Statistics::Basic qw(:all);
 
-die "usage: ./$0 <packets_per_hour> <simulation_time_(hours)> <terrain_file!>\n" unless (scalar @ARGV == 3);
+die "usage: $0 <packets_per_hour> <simulation_time_(hours)> <terrain_file!>\n" unless (scalar @ARGV == 3);
 
 die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($ARGV[0] < 1);
 die "Simulation time must be longer than or equal to 1h\n" if ($ARGV[1] < 1);
@@ -51,9 +51,10 @@ my %nunique = (); # unique transmissions per node (equivalent to FCntUp)
 my %nacked = (); # unique acked packets (for confirmed transmissions)
 my %ndeliv = (); # unique delivered packets (for non-confirmed transmissions)
 my %nperiod = (); 
-my %ndc = (); # handles node radio duty cycle
+my %ndc = (); # indicates when a node can transmit again per band (according to dc)
 my %npkt = (); # packet size per node
 my %ntotretr = (); # number of retransmissions per node (total)
+my %nlast_ch = (); # last transmission time
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -80,6 +81,7 @@ my @Ptx_w = (12*$volt, 20*$volt, 32*$volt, 51*$volt, 76*$volt); # Ptx cons. for 
 my $Prx_w = 46 * $volt;
 my $Pidle_w = 30 * $volt; # this is actually the consumption of the microcontroller in idle mode
 my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels
+my @bands = ("48", "47");
 my %band = (868100000=>"48", 868300000=>"48", 868500000=>"48", 867100000=>"47", 867300000=>"47", 867500000=>"47", 867700000=>"47", 867900000=>"47"); # band name per channel (all of them with 1% duty cycle)
 my $rx2sf = 9; # SF used for RX2 (LoRaWAN default = SF12, TTN uses SF9)
 my $rx2ch = 869525000; # channel used for RX2 (LoRaWAN default = 869.525MHz, TTN uses the same)
@@ -102,7 +104,7 @@ my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhe
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
-my $confirmed_perc = 0; # percentage of nodes that require confirmed transmissions (1=all)
+my $confirmed_perc = 1; # percentage of nodes that require confirmed transmissions (1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $max_retr = 1; # max number of retransmissions per packet (default value = 1)
 my $period = 3600/$ARGV[0]; # time period between transmissions
@@ -152,12 +154,15 @@ foreach my $n (keys %ncoords){
 	my $sf = min_sf($n);
 	$avg_sf += $sf;
 	$avg_pkt += $npkt{$n};
-	my $stop = $start + airtime($sf, $npkt{$n});
+	my $airt = airtime($sf, $npkt{$n});
+	my $stop = $start + $airt;
 	print "# $n will transmit from $start to $stop (SF $sf)\n" if ($debug == 1);
 	$nunique{$n} = 1;
-	push (@init_trans, [$n, $start, $stop, $channels[rand @channels], $sf, $nunique{$n}]);
-	$nconsumption{$n} += airtime($sf, $npkt{$n}) * $Ptx_w[$nptx{$n}] + (airtime($sf, $npkt{$n})+1) * $Pidle_w; # +1sec for sensing
+	my $ch = $channels[rand @channels];
+	push (@init_trans, [$n, $start, $stop, $ch, $sf, $nunique{$n}]);
+	$nconsumption{$n} += $airt * $Ptx_w[$nptx{$n}] + $airt * $Pidle_w;
 	$total_trans += 1;
+	$ndc{$n}{$band{$ch}} = $stop + 99*$airt;
 }
 
 # sort transmissions in ascending order
@@ -208,6 +213,7 @@ while (1){
 		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf); # check collisions and return a list of gws that received the uplink pkt
 		my $rwindow = 0;
 		my $failed = 0;
+		$nlast_ch{$sel} = $sel_ch;
 		# keep the last 20 max received powers
 		my $max_snr = -999;
 		foreach my $g (@$gw_rc){
@@ -286,10 +292,9 @@ while (1){
 			$sel_ch = $new_ch;
 			my $at = airtime($sel_sf, $npkt{$sel});
 			$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
-			my $next_allowed = $sel_end + 99*$at; # I need to change this to look at the band
-			if ($sel_sta < $next_allowed){
+			if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
 				print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-				$sel_sta = $next_allowed;
+				$sel_sta = $ndc{$sel}{$band{$sel_ch}};
 			}
 			$sel_end = $sel_sta + $at;
 			# place the new transmission at the correct position
@@ -303,20 +308,21 @@ while (1){
 			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			$total_trans += 1 if ($sel_sta < $sim_time);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + ($at+1) * $Pidle_w;
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
+			$ndc{$sel}{$band{$sel_ch}} = $sel_end + 99*$at;
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
 		if ($failed == 1){
 			my $at = 0;
 			my $new_trans = 0;
+			my $new_ch = $channels[rand @channels];
+			$new_ch = $channels[rand @channels] while ($new_ch == $sel_ch);
+			$sel_ch = $new_ch;
 			if ($nconfirmed{$sel} == 1){
 				if ($nretransmissions{$sel} < $max_retr){
 					$nretransmissions{$sel} += 1;
 					$sf_retrans{$sel_sf} += 1;
-					my $new_ch = $channels[rand @channels];
-					$new_ch = $channels[rand @channels] while ($new_ch == $sel_ch);
-					$sel_ch = $new_ch;
 				}else{
 					$dropped += 1;
 					$ntotretr{$sel} += $nretransmissions{$sel};
@@ -334,7 +340,6 @@ while (1){
 				}else{
 					$sel_sta = $sel_end + 2 + $nperiod{$sel} + rand(1);
 				}
-				$sel_sta = $sel_end + 99*$at + rand(1) if ($sel_sta < ($ndc{$sel}{$sel_ch} + 99*$at));
 			}else{
 				$dropped_unc += 1;
 				$prev_seq{$sel} = $sel_seq;
@@ -342,14 +347,12 @@ while (1){
 				print "# $sel 's packet lost!\n" if ($debug == 1);
 				$at = airtime($sel_sf, $npkt{$sel});
 				$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
-				my $next_allowed = $sel_end + 99*$at;
-				if ($sel_sta < $next_allowed){
-					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-					$sel_sta = $next_allowed;
-				}
+			}
+			if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
+				print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
+				$sel_sta = $ndc{$sel}{$band{$sel_ch}};
 			}
 			$sel_end = $sel_sta+$at;
-			$ndc{$sel}{$sel_ch} = $sel_end;
 			# place the new transmission at the correct position
 			my $i = 0;
 			foreach my $el (@{$sorted_t{$sel_ch}}){
@@ -364,7 +367,8 @@ while (1){
 			$total_trans += 1 if ($sel_sta < $sim_time);
 			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + ($at+1) * $Pidle_w;
+			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
+			$ndc{$sel}{$band{$sel_ch}} = $sel_end + 99*$at;
 		}
 		foreach my $g (keys %gcoords){
 			$surpressed{$sel}{$g} = 0;
@@ -511,7 +515,9 @@ while (1){
 		@{$overlaps{$sel}} = ();
 		if ($nconfirmed{$dest} == 1){
 			# plan next transmission
-			$ch = $channels[rand @channels];
+			do{
+				$ch = $channels[rand @channels]; 
+			} while ($ch == $nlast_ch{$dest});
 			my $extra_bytes = 0;
 			if ($nresponse{$dest} == 1){
 				$extra_bytes = $adr;
@@ -520,16 +526,14 @@ while (1){
 			my $at = airtime($sf, $npkt{$dest}+$extra_bytes);
 			my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
 			$new_start = $sel_sta - $rwindow + 2 + 1 + rand(2) if ($failed == 1 && $new_trans == 0);
-			my $next_allowed = $ndc{$dest}{$ch} + 99*$at;
-			if ($new_start < $next_allowed){
+			if ($new_start < $ndc{$dest}{$band{$ch}}){
 				print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-				$new_start = $next_allowed;
+				$new_start = $ndc{$dest}{$band{$ch}};
 			}
 			if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
 				$nunique{$dest} += 1;
 			}
 			my $new_end = $new_start + $at;
-			$ndc{$dest}{$ch} = $new_end;
 			my $i = 0;
 			foreach my $el (@{$sorted_t{$ch}}){
 				my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
@@ -540,7 +544,8 @@ while (1){
 			$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
 			$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
 			print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
-			$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + ($at+1) * $Pidle_w if ($new_start < $sim_time);
+			$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + $at * $Pidle_w if ($new_start < $sim_time);
+			$ndc{$dest}{$band{$ch}} = $new_end + 99*$at;
 		}
 	}
 }
@@ -558,7 +563,7 @@ print "Total number of transmissions = $total_trans\n";
 print "Total number of re-transmissions = $total_retrans\n" if ($confirmed_perc > 0);
 printf "Total number of unique transmissions = %d\n", (sum values %nunique);
 printf "Stdv of unique transmissions = %.2f\n", stddev(values %nunique);
-print "Total packets delivered = (sum values %ndeliv)\n"; # total packets received (but may not be acked)
+printf "Total packets delivered = %d\n", (sum values %ndeliv); # total packets received (but may not be acked)
 printf "Total packets acknowledged = %d\n", (sum values %nacked);
 print "Total confirmed packets dropped = $dropped\n";
 print "Total unconfirmed packets dropped = $dropped_unc\n";
@@ -1022,8 +1027,8 @@ sub read_data{
 		}else{
 			$nperiod{$n} = $period;
 		}
-		foreach my $ch (@channels){
-			$ndc{$n}{$ch} = -9999999999999;
+		foreach my $bnd (@bands){
+			$ndc{$n}{$bnd} = -1;
 		}
 		@{$powers{$n}} = ();
 	}

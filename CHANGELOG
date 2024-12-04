@@ -1,5 +1,10 @@
 CHANGELOG
 ----------
+v2024.12.4-EU868
+* fixed next tx time according to the duty cycle per band
+* fixed a print error with total packets delivered
+* fixed random channel assignment in confirmed transmissions
+
 v2024.9.16-EU868
 * fixed the PRR calculation when confirmed transmissions are enabled
 
