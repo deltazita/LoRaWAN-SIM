@@ -1,7 +1,7 @@
 CHANGELOG
 ----------
 v2025.04.13-EU868
-* changed some statistics to be more comprehensable
+* changed some statistics to be more comprehensible
     ** Packet Delivery Ratio (PDR) is now calculated as (total unique packets received) / (total unique packets transmitted)
     ** Confirmed Packet Deliver Ratio (CPDR) is introduced and calculated as (unique packets acked) / (unique packets transmitted)
     ** Packet Reception Ratio (PRR) is now calculated as (total packets received) / (total packets transmitted)
