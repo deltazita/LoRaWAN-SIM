@@ -1,5 +1,14 @@
 CHANGELOG
 ----------
+v2025.04.13-EU868
+* changed some statistics to be more comprehensable
+    ** Packet Delivery Ratio (PDR) is now calculated as (total unique packets received) / (total unique packets transmitted)
+    ** Confirmed Packet Deliver Ratio (CPDR) is introduced and calculated as (unique packets acked) / (unique packets transmitted)
+    ** Packet Reception Ratio (PRR) is now calculated as (total packets received) / (total packets transmitted)
+* the duty cycle for uplinks is now a variable (given as the airtime multiplier for the next transmission)
+* removed unused variables
+* confirmed the correctness of the simulator using real-world experiments as part of a project with industry (see https://research.nu.edu.kz/en/projects/analysis-and-improvement-proposal-of-deeptrack-loralorawan-networ)
+
 v2024.12.4-EU868
 * fixed next tx time according to the duty cycle per band
 * fixed a print error with total packets delivered

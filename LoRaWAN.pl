@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                               v2024.12.4-EU868                                  #
+#                               v2025.04.13-EU868                                 #
 #                                                                                 #
 # Features:                                                                       #
 # -- Multiple half-duplex gateways                                                #
@@ -55,6 +55,8 @@ my %ndc = (); # indicates when a node can transmit again per band (according to 
 my %npkt = (); # packet size per node
 my %ntotretr = (); # number of retransmissions per node (total)
 my %nlast_ch = (); # last transmission time
+my %ndeliv_seq = (); # 1 = unique packet seq exists (for confirmed uplinks)
+my %nacked_uniq = (); # 1 = unique packet seq has been acked (for confirmed uplinks)
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -85,6 +87,7 @@ my @bands = ("48", "47");
 my %band = (868100000=>"48", 868300000=>"48", 868500000=>"48", 867100000=>"47", 867300000=>"47", 867500000=>"47", 867700000=>"47", 867900000=>"47"); # band name per channel (all of them with 1% duty cycle)
 my $rx2sf = 9; # SF used for RX2 (LoRaWAN default = SF12, TTN uses SF9)
 my $rx2ch = 869525000; # channel used for RX2 (LoRaWAN default = 869.525MHz, TTN uses the same)
+my $dutycycle = 99; # airtime multiplier for low duty cycle uplink transmissions (99 = 1% duty cycle, 9 = 10%)
 
 # packet specific parameters
 my @fpl = (222, 222, 115, 51, 51, 51); # max uplink frame payload per SF (bytes)
@@ -104,7 +107,7 @@ my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhe
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
-my $confirmed_perc = 0; # percentage of nodes that require confirmed transmissions (1=all)
+my $confirmed_perc = 1; # percentage of nodes that require confirmed transmissions (1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $max_retr = 1; # max number of retransmissions per packet (default value = 1)
 my $period = 3600/$ARGV[0]; # time period between transmissions
@@ -137,13 +140,11 @@ my $double_gws = 0; # enable 8x2 channel gateways
 
 # application server
 my $policy = 1; # gateway selection policy for downlink traffic
-my %prev_seq = ();
 my %appacked = (); # counts the number of acked packets per node
 my %appsuccess = (); # counts the number of packets that received from at least one gw per node
 my %nogwavail = (); # counts how many time no gw was available (keys = nodes)
 my %powers = (); # contains last 10 received powers per node
 
-my %nattempts  = ();
 
 read_data(); # read terrain file
 
@@ -158,11 +159,13 @@ foreach my $n (keys %ncoords){
 	my $stop = $start + $airt;
 	print "# $n will transmit from $start to $stop (SF $sf)\n" if ($debug == 1);
 	$nunique{$n} = 1;
+	$ndeliv_seq{$n}{$nunique{$n}} = 1;
+	$nacked_uniq{$n}{$nunique{$n}} = 1 if ($nconfirmed{$n} == 1);
 	my $ch = $channels[rand @channels];
 	push (@init_trans, [$n, $start, $stop, $ch, $sf, $nunique{$n}]);
 	$nconsumption{$n} += $airt * $Ptx_w[$nptx{$n}] + $airt * $Pidle_w;
 	$total_trans += 1;
-	$ndc{$n}{$band{$ch}} = $stop + 99*$airt;
+	$ndc{$n}{$band{$ch}} = $stop + $dutycycle*$airt;
 }
 
 # sort transmissions in ascending order
@@ -221,14 +224,17 @@ while (1){
 			$max_snr = $snr if ($snr > $max_snr);
 		}
 		push (@{$powers{$sel}}, $max_snr) if ($max_snr > -999);
-		shift @{$powers{$sel}} if (scalar @{$powers{$sel}} > 20);
+		shift @{$powers{$sel}} if (scalar @{$powers{$sel}} > 10);
 		if ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 1)){ # if at least one gateway received the pkt -> successful transmission
-			$ndeliv{$sel} += 1;
 			my ($new_ptx, $new_index) = (undef, -1);
-			if (scalar @{$powers{$sel}} == 20){
+			if (scalar @{$powers{$sel}} == 10){
 				($new_ptx, $new_index) = adr($sel, $sel_sf);
 			}
-			$appsuccess{$sel} += 1 if ($sel_seq > $prev_seq{$sel});
+			if (exists $ndeliv_seq{$sel}{$sel_seq}){
+				$ndeliv{$sel} += 1;
+				delete $ndeliv_seq{$sel}{$sel_seq};
+			}
+			$appsuccess{$sel} += 1;
 			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
 			# now we have to find which gateway (if any) can transmit an ack in RX1 or RX2
 			# check RX1
@@ -248,9 +254,9 @@ while (1){
 					$failed = 1;
 				}
 			}
-			$prev_seq{$sel} = $sel_seq;
 		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful transmission but no ack is required
 			$ndeliv{$sel} += 1;
+			$appsuccess{$sel} += 1;
 			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
 			### ADR for unconfirmed transmissions
 			if (scalar @{$powers{$sel}} == 10){
@@ -309,7 +315,7 @@ while (1){
 			$total_trans += 1 if ($sel_sta < $sim_time);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
-			$ndc{$sel}{$band{$sel_ch}} = $sel_end + 99*$at;
+			$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at;
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
@@ -329,6 +335,7 @@ while (1){
 					$nretransmissions{$sel} = 0;
 					$new_trans = 1;
 					print "# $sel 's packet lost!\n" if ($debug == 1);
+					delete $nacked_uniq{$sel}{$sel_seq};
 				}
 				# the node stays on only for the duration of the preamble for both receive windows + in idle mode between RX windows
 				$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
@@ -342,7 +349,6 @@ while (1){
 				}
 			}else{
 				$dropped_unc += 1;
-				$prev_seq{$sel} = $sel_seq;
 				$new_trans = 1;
 				print "# $sel 's packet lost!\n" if ($debug == 1);
 				$at = airtime($sel_sf, $npkt{$sel});
@@ -362,13 +368,17 @@ while (1){
 			}
 			if (($new_trans == 1) && ($sel_sta < $sim_time)){ # do not count transmissions that exceed the simulation time
 				$nunique{$sel} += 1;
-				$total_retrans += 1 if ($nconfirmed{$sel} == 1);
+				if ($nconfirmed{$sel} == 1){
+					$total_retrans += 1;
+					$ndeliv_seq{$sel}{$nunique{$sel}} = 1;
+					$nacked_uniq{$sel}{$nunique{$sel}} = 1;
+				}
 			}
 			$total_trans += 1 if ($sel_sta < $sim_time);
 			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
-			$ndc{$sel}{$band{$sel_ch}} = $sel_end + 99*$at;
+			$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at;
 		}
 		foreach my $g (keys %gcoords){
 			$surpressed{$sel}{$g} = 0;
@@ -481,7 +491,10 @@ while (1){
 			if ($nconfirmed{$dest} == 1){
 				print "# ack successfully received, $dest 's transmission has been acked\n" if ($debug == 1);
 				$ntotretr{$dest} += $nretransmissions{$dest};
-				$nacked{$dest} += 1;
+				if (exists $nacked_uniq{$dest}{$nunique{$dest}}){
+					$nacked{$dest} += 1;
+					delete $nacked_uniq{$dest}{$nunique{$dest}};
+				}
 				$nretransmissions{$dest} = 0;
 				$new_trans = 1;
 			}
@@ -507,6 +520,7 @@ while (1){
 					$nretransmissions{$dest} = 0;
 					$new_trans = 1;
 					print "# $dest 's packet lost (no ack received)!\n" if ($debug == 1);
+					delete $nacked_uniq{$dest}{$nunique{$dest}};
 				}
 			}
 			$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
@@ -532,6 +546,8 @@ while (1){
 			}
 			if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
 				$nunique{$dest} += 1;
+				$ndeliv_seq{$dest}{$nunique{$dest}} = 1;
+				$nacked_uniq{$dest}{$nunique{$dest}} = 1;
 			}
 			my $new_end = $new_start + $at;
 			my $i = 0;
@@ -545,7 +561,7 @@ while (1){
 			$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
 			print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
 			$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + $at * $Pidle_w if ($new_start < $sim_time);
-			$ndc{$dest}{$band{$ch}} = $new_end + 99*$at;
+			$ndc{$dest}{$band{$ch}} = $new_end + $dutycycle*$at;
 		}
 	}
 }
@@ -563,20 +579,20 @@ print "Total number of transmissions = $total_trans\n";
 print "Total number of re-transmissions = $total_retrans\n" if ($confirmed_perc > 0);
 printf "Total number of unique transmissions = %d\n", (sum values %nunique);
 printf "Stdv of unique transmissions = %.2f\n", stddev(values %nunique);
-printf "Total packets delivered = %d\n", (sum values %ndeliv); # total packets received (but may not be acked)
-printf "Total packets acknowledged = %d\n", (sum values %nacked);
+printf "Total packets received = %d\n", (sum values %appsuccess); # total packets received
+printf "Total unique packets acknowledged = %d\n", (sum values %nacked);
 print "Total confirmed packets dropped = $dropped\n";
 print "Total unconfirmed packets dropped = $dropped_unc\n";
-printf "Packet Delivery Ratio = %.5f\n", (sum values %nacked)/(sum values %nunique); # unique packets acked / unique packets transmitted
-printf "Packet Reception Ratio = %.5f\n", (sum values %ndeliv)/$total_trans; # total packets received / total packets transmitted
+printf "Confirmed Packet Delivery Ratio (unique) = %.5f\n", (sum values %nacked)/(sum values %nunique) if ($confirmed_perc > 0); # unique packets acked / unique packets transmitted
+printf "Packet Delivery Ratio = %.5f\n", (sum values %ndeliv)/(sum values %nunique); # total unique packets received / total unique packets transmitted
+printf "Packet Reception Ratio = %.5f\n", (sum values %appsuccess)/$total_trans; # total packets received / total packets transmitted
 my @fairs = ();
 foreach my $n (keys %ncoords){
 	if ($nconfirmed{$n} == 0){
 		push(@fairs, $ndeliv{$n}/$nunique{$n});
 	}
 }
-printf "Uplink fairness = %.3f\n", stddev(\@fairs) if (scalar @fairs > 0); # for unconfirmed traffic
-printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
+printf "Unconfirmed uplink fairness = %.3f\n", stddev(\@fairs) if (scalar @fairs > 0); # for unconfirmed traffic
 print "-----\n";
 if ($confirmed_perc > 0){
 	print "No GW available in RX1 = $no_rx1 times\n";
@@ -589,8 +605,8 @@ if ($confirmed_perc > 0){
 	my $avgretr = 0;
 	foreach my $n (keys %ncoords){
 		next if ($nconfirmed{$n} == 0);
-		$appsuccess{$n} = 1 if ($appsuccess{$n} == 0);
-		push(@fairs, $appacked{$n}/$appsuccess{$n});
+		$nacked{$n} = 1 if ($nacked{$n} == 0);
+		push(@fairs, $nacked{$n}/$nunique{$n});
 		$avgretr += $ntotretr{$n}/$nunique{$n};
 	}
 	printf "Downlink fairness = %.3f\n", stddev(\@fairs);
@@ -602,7 +618,8 @@ for (my $sf=7; $sf<=12; $sf+=1){
 	printf "# of nodes with SF%d: %d, Avg retransmissions: %.2f\n", $sf, $sf_distr[$sf-7], $sf_retrans{$sf}/$sf_distr[$sf-7] if ($sf_distr[$sf-7] > 0);
 }
 printf "Avg SF = %.3f\n", $avg_sf/(scalar keys %ncoords);
-printf "Avg packet size = %.3f bytes\n", $avg_pkt/(scalar keys %ncoords);
+# printf "Avg packet size = %.3f bytes\n", $avg_pkt/(scalar keys %ncoords); # includes overhead
+printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
 generate_picture() if ($picture == 1);
 
 
@@ -621,7 +638,7 @@ sub schedule_downlink{
 	print "# gw $sel_gw will transmit an ack (or commands) to $sel (RX$rwindow) (channel $sel_ch)\n" if ($debug == 1);
 	$gresponses{$sel_gw} += 1;
 	push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf, "d"]);
-	my $dc = 99;
+	my $dc = $dutycycle;
 	$dc = 9 if ($rwindow == 2);
 	$gdc{$sel_gw}{$bnd} = $ack_end+$airt*$dc;
 	my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
@@ -632,7 +649,7 @@ sub schedule_downlink{
 		last if ($sta > $ack_sta);
 		$i += 1;
 	}
-	$appacked{$sel} += 1 if (($sel_seq > $prev_seq{$sel}) && ($nconfirmed{$sel} == 1));
+	$appacked{$sel} += 1 if ($nconfirmed{$sel} == 1);
 	splice(@{$sorted_t{$sel_ch}}, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $sel_sf, $appacked{$sel}]);
 	push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, $new_index]);
 }
@@ -1017,7 +1034,6 @@ sub read_data{
 		$ndeliv{$n} = 0;
 		$appacked{$n} = 0;
 		$appsuccess{$n} = 0;
-		$prev_seq{$n} = 0;
 		$nogwavail{$n} = 0;
 		if ($fixed_packet_rate == 0){
 			my @per = random_exponential(scalar keys @nodes, 2*$period); # other distributions may be used
