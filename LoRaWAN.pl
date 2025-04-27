@@ -2,9 +2,10 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                               v2025.04.13-EU868                                 #
+#                                  v2025.04.27                                    #
 #                                                                                 #
 # Features:                                                                       #
+# -- EU868 or US915 spectrum
 # -- Multiple half-duplex gateways                                                #
 # -- 1% radio duty cycle per band for the nodes                                   #
 # -- 1 or 10% radio duty cycle for the gateways                                   #
@@ -74,23 +75,36 @@ my $margin = 5;
 my $var = 3.57; # variance
 my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
 my $noise = -90; # noise level for snr calculation
-my $bw = 125000; # channel bandwidth
+my $bw125 = 125000; # channel bandwidth
 my $cr = 1; # Coding Rate
 my $volt = 3.3; # avg voltage
 my $Ptx_gw = 25; # gateway tx power (dBm)
-my @Ptx_l = (2, 5, 8, 11, 14); # dBm
-my @Ptx_w = (12*$volt, 20*$volt, 32*$volt, 51*$volt, 76*$volt); # Ptx cons. for 2, 5, 8, 11, and 14dBm (mA * V = mW)
+my @Ptx_l = (2, 5, 8, 11, 14, 17, 20); # dBm
+my @Ptx_w = (12*$volt, 20*$volt, 32*$volt, 51*$volt, 76*$volt, 90*$volt, 105*$volt); # Ptx cons. for 2, 5, 8, 11, 14, 17, and 20dBm (mA * V = mW)
 my $Prx_w = 46 * $volt;
 my $Pidle_w = 30 * $volt; # this is actually the consumption of the microcontroller in idle mode
+my $fplan = "EU868"; # EU868 (default) or US915
+# ------ EU868 ------- #
 my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels
 my @bands = ("48", "47");
 my %band = (868100000=>"48", 868300000=>"48", 868500000=>"48", 867100000=>"47", 867300000=>"47", 867500000=>"47", 867700000=>"47", 867900000=>"47"); # band name per channel (all of them with 1% duty cycle)
 my $rx2sf = 9; # SF used for RX2 (LoRaWAN default = SF12, TTN uses SF9)
 my $rx2ch = 869525000; # channel used for RX2 (LoRaWAN default = 869.525MHz, TTN uses the same)
 my $dutycycle = 99; # airtime multiplier for low duty cycle uplink transmissions (99 = 1% duty cycle, 9 = 10%)
+# ------ US915 ------- #
+my %uplink_ch_index = ();
+if ($fplan eq "US915"){
+	@channels = (903900000, 904100000, 904300000, 904500000, 904700000, 904900000, 905100000, 905300000);
+	%uplink_ch_index = (903900000=>0, 904100000=>1, 904300000=>2, 904500000=>3, 904700000=>4, 904900000=>5, 905100000=>6, 905300000=>7); # key=uplink channel, value=index of uplink channel in @channels
+	$rx2sf = 12; # SF used for RX2 (500kHz)
+	$rx2ch = 923300000; # channel used for RX2
+}
+my $bw500 = 500000;
+my @channels_d = (923300000, 923900000, 924500000, 925100000, 925700000, 926300000, 926900000, 927500000); # 8x500kHz RX1 downlink channels (all SFs)
 
 # packet specific parameters
 my @fpl = (222, 222, 115, 51, 51, 51); # max uplink frame payload per SF (bytes)
+@fpl = (222, 125, 53, 11) if ($fplan eq "US915"); # max uplink frame payload per DR(4-0) (bytes)
 my $preamble = 8; # in symbols
 my $H = 0; # header 0/1
 my $hcrc = 0; # HCRC bytes
@@ -107,7 +121,7 @@ my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhe
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
-my $confirmed_perc = 1; # percentage of nodes that require confirmed transmissions (1=all)
+my $confirmed_perc = 0; # percentage of nodes that require confirmed transmissions (1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $max_retr = 1; # max number of retransmissions per packet (default value = 1)
 my $period = 3600/$ARGV[0]; # time period between transmissions
@@ -122,12 +136,12 @@ my $total_trans = 0; # number of transm. packets
 my $total_retrans = 0; # number of re-transm packets
 my $no_rx1 = 0; # no gw was available in RX1
 my $no_rx2 = 0; # no gw was available in RX1 or RX2
-my $picture = 0; # generate an energy consumption map
+my $picture = 1; # generate an energy consumption or a PRR map (see line after stats)
 my $fixed_packet_rate = 1; # send packets periodically with a fixed rate (=1) or at random (=0)
 my $total_down_time = 0; # total downlink time
 my $avg_sf = 0;
 my @sf_distr = (0, 0, 0, 0, 0, 0);
-my $fixed_packet_size = 0; # all nodes have the same packet size defined in @fpl (=1) or a randomly selected (=0)
+my $fixed_packet_size = 1; # all nodes have the same packet size defined in @fpl (=1) or a randomly selected (=0)
 my $packet_size = 16; # default packet size if fixed_packet_size=1 or avg packet size if fixed_packet_size=0 (Bytes)
 my $packet_size_distr = "normal"; # uniform / normal (applicable if fixed_packet_size=0)
 my $avg_pkt = 0; # actual average packet size
@@ -140,6 +154,7 @@ my $double_gws = 0; # enable 8x2 channel gateways
 
 # application server
 my $policy = 1; # gateway selection policy for downlink traffic
+die "# The least busy policy cannot be used with US915 frequencies" if (($policy == 3) && ($fplan eq "US915"));
 my %appacked = (); # counts the number of acked packets per node
 my %appsuccess = (); # counts the number of packets that received from at least one gw per node
 my %nogwavail = (); # counts how many time no gw was available (keys = nodes)
@@ -155,7 +170,7 @@ foreach my $n (keys %ncoords){
 	my $sf = min_sf($n);
 	$avg_sf += $sf;
 	$avg_pkt += $npkt{$n};
-	my $airt = airtime($sf, $npkt{$n});
+	my $airt = airtime($sf, $bw125, $npkt{$n});
 	my $stop = $start + $airt;
 	print "# $n will transmit from $start to $stop (SF $sf)\n" if ($debug == 1);
 	$nunique{$n} = 1;
@@ -165,7 +180,7 @@ foreach my $n (keys %ncoords){
 	push (@init_trans, [$n, $start, $stop, $ch, $sf, $nunique{$n}]);
 	$nconsumption{$n} += $airt * $Ptx_w[$nptx{$n}] + $airt * $Pidle_w;
 	$total_trans += 1;
-	$ndc{$n}{$band{$ch}} = $stop + $dutycycle*$airt;
+	$ndc{$n}{$band{$ch}} = $stop + $dutycycle*$airt if ($fplan ne "US915");
 }
 
 # sort transmissions in ascending order
@@ -227,7 +242,7 @@ while (1){
 		shift @{$powers{$sel}} if (scalar @{$powers{$sel}} > 10);
 		if ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 1)){ # if at least one gateway received the pkt -> successful transmission
 			my ($new_ptx, $new_index) = (undef, -1);
-			if (scalar @{$powers{$sel}} == 10){
+			if ((scalar @{$powers{$sel}} == 10) && ($adr_on == 1)){
 				($new_ptx, $new_index) = adr($sel, $sel_sf);
 			}
 			if (exists $ndeliv_seq{$sel}{$sel_seq}){
@@ -259,9 +274,9 @@ while (1){
 			$appsuccess{$sel} += 1;
 			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
 			### ADR for unconfirmed transmissions
-			if (scalar @{$powers{$sel}} == 10){
+			if ((scalar @{$powers{$sel}} == 10) && ($adr_on == 1)){
 				my ($new_ptx, $new_index) = adr($sel, $sel_sf);
-				if ((defined $new_ptx) && ($adr_on == 1)){
+				if (defined $new_ptx){
 					my $sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1);
 					if (defined $sel_gw){
 						schedule_downlink($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 1, $new_index);
@@ -290,17 +305,19 @@ while (1){
 				}
 				splice @{$gunavailability{$gw}}, $index, 1;
 			}
-			$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
-			$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
+			$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw125)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw125 * ($Prx_w + $Pidle_w);
+			$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw125 * ($Prx_w + $Pidle_w);
 			
 			my $new_ch = $channels[rand @channels];
 			$new_ch = $channels[rand @channels] while ($new_ch == $sel_ch);
 			$sel_ch = $new_ch;
-			my $at = airtime($sel_sf, $npkt{$sel});
+			my $at = airtime($sel_sf, $bw125, $npkt{$sel});
 			$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
-			if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
-				print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-				$sel_sta = $ndc{$sel}{$band{$sel_ch}};
+			if ($fplan ne "US915"){
+				if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
+					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
+					$sel_sta = $ndc{$sel}{$band{$sel_ch}};
+				}
 			}
 			$sel_end = $sel_sta + $at;
 			# place the new transmission at the correct position
@@ -315,7 +332,7 @@ while (1){
 			$total_trans += 1 if ($sel_sta < $sim_time);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
-			$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at;
+			$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
@@ -338,10 +355,10 @@ while (1){
 					delete $nacked_uniq{$sel}{$sel_seq};
 				}
 				# the node stays on only for the duration of the preamble for both receive windows + in idle mode between RX windows
-				$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw * ($Prx_w + $Pidle_w);
-				$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
+				$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw125)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw125 * ($Prx_w + $Pidle_w);
+				$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw125 * ($Prx_w + $Pidle_w);
 				# plan the next transmission as soon as the duty cycle permits that
-				$at = airtime($sel_sf, $npkt{$sel});
+				$at = airtime($sel_sf, $bw125, $npkt{$sel});
 				if ($new_trans == 0){
 					$sel_sta = $sel_end + 2 + 1 + rand(2);
 				}else{
@@ -351,12 +368,14 @@ while (1){
 				$dropped_unc += 1;
 				$new_trans = 1;
 				print "# $sel 's packet lost!\n" if ($debug == 1);
-				$at = airtime($sel_sf, $npkt{$sel});
+				$at = airtime($sel_sf, $bw125, $npkt{$sel});
 				$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
 			}
-			if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
-				print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-				$sel_sta = $ndc{$sel}{$band{$sel_ch}};
+			if ($fplan ne "US915"){
+				if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
+					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
+					$sel_sta = $ndc{$sel}{$band{$sel_ch}};
+				}
 			}
 			$sel_end = $sel_sta+$at;
 			# place the new transmission at the correct position
@@ -378,7 +397,7 @@ while (1){
 			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
 			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
-			$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at;
+			$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
 		}
 		foreach my $g (keys %gcoords){
 			$surpressed{$sel}{$g} = 0;
@@ -420,7 +439,9 @@ while (1){
 		my $G = random_normal(1, 0, 1);
 		my $d = distance($gcoords{$sel}[0], $ncoords{$dest}[0], $gcoords{$sel}[1], $ncoords{$dest}[1]);
 		my $prx = $Ptx_gw - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
-		if ($prx < $sensis[$sel_sf-7][bwconv($bw)]){
+		my $cb = $bw125;
+		$cb = $bw500 if ($fplan eq "US915");
+		if ($prx < $sensis[$sel_sf-7][bwconv($cb)]){
 			print "# ack didn't reach node $dest\n" if ($debug == 1);
 			$failed = 1;
 		}
@@ -498,8 +519,10 @@ while (1){
 				$nretransmissions{$dest} = 0;
 				$new_trans = 1;
 			}
+			my $cb = $bw125;
+			$cb = $bw500 if ($fplan eq "US915");
 			if ($rwindow == 2){ # also count the RX1 window
-				$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
+				$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$cb)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$cb * ($Prx_w + $Pidle_w);
 			}
 			my $extra_bytes = 0; # if an ADR request is included in the downlink packet
 			if ($pow != -1){
@@ -508,7 +531,7 @@ while (1){
 				$nresponse{$dest} = 1;
 				print "# transmit power of $dest is set to $Ptx_l[$pow]dBm\n" if ($debug == 1);
 			}
-			$nconsumption{$dest} += airtime($sel_sf, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
+			$nconsumption{$dest} += airtime($sel_sf, $cb, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
 		}else{ # ack was not received
 			if ($nconfirmed{$dest} == 1){
 				if ($nretransmissions{$dest} < $max_retr){
@@ -523,8 +546,10 @@ while (1){
 					delete $nacked_uniq{$dest}{$nunique{$dest}};
 				}
 			}
-			$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$bw)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$bw * ($Prx_w + $Pidle_w);
-			$nconsumption{$dest} += ($preamble+4.25)*(2**$rx2sf)/$bw * ($Prx_w + $Pidle_w);
+			my $cb = $bw125;
+			$cb = $bw500 if ($fplan eq "US915");
+			$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$cb)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$cb * ($Prx_w + $Pidle_w);
+			$nconsumption{$dest} += ($preamble+4.25)*(2**$rx2sf)/$cb * ($Prx_w + $Pidle_w);
 		}
 		@{$overlaps{$sel}} = ();
 		if ($nconfirmed{$dest} == 1){
@@ -537,12 +562,14 @@ while (1){
 				$extra_bytes = $adr;
 				$nresponse{$dest} = 0;
 			}
-			my $at = airtime($sf, $npkt{$dest}+$extra_bytes);
+			my $at = airtime($sf, $bw125, $npkt{$dest}+$extra_bytes);
 			my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
 			$new_start = $sel_sta - $rwindow + 2 + 1 + rand(2) if ($failed == 1 && $new_trans == 0);
-			if ($new_start < $ndc{$dest}{$band{$ch}}){
-				print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-				$new_start = $ndc{$dest}{$band{$ch}};
+			if ($fplan ne "US915"){
+				if ($new_start < $ndc{$dest}{$band{$ch}}){
+					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
+					$new_start = $ndc{$dest}{$band{$ch}};
+				}
 			}
 			if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
 				$nunique{$dest} += 1;
@@ -561,7 +588,7 @@ while (1){
 			$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
 			print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
 			$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + $at * $Pidle_w if ($new_start < $sim_time);
-			$ndc{$dest}{$band{$ch}} = $new_end + $dutycycle*$at;
+			$ndc{$dest}{$band{$ch}} = $new_end + $dutycycle*$at if ($fplan ne "US915");
 		}
 	}
 }
@@ -620,27 +647,36 @@ for (my $sf=7; $sf<=12; $sf+=1){
 printf "Avg SF = %.3f\n", $avg_sf/(scalar keys %ncoords);
 # printf "Avg packet size = %.3f bytes\n", $avg_pkt/(scalar keys %ncoords); # includes overhead
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
-generate_picture() if ($picture == 1);
+generate_picture(1) if ($picture == 1); # 0=energy consumption map, 1=PRR map
 
 
 sub schedule_downlink{
 	my ($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, $rwindow, $new_index) = @_;
-	my $bnd = "54"; # band: 54 for 869525000 RX2
-	$bnd = $band{$sel_ch} if ($rwindow == 1);
+	my $bnd;
+	if ($fplan eq "US915"){
+		$sel_ch = $channels_d[$uplink_ch_index{$sel_ch}] if ($rwindow == 1);
+	} else {
+		$bnd = "54"; # band: 54 for 869525000 RX2
+		$bnd = $band{$sel_ch} if ($rwindow == 1);
+	}
 	my $extra_bytes = 0;
 	if ($new_index != -1){
 		print "# it will be suggested that $sel changes tx power to $Ptx_l[$new_index]dBm\n" if ($debug == 1);
 		$extra_bytes = $adr;
 	}
-	my $airt = airtime($sel_sf, $overhead_d+$extra_bytes);
+	my $cb = $bw125;
+	$cb = $bw500 if ($fplan eq "US915");
+	my $airt = airtime($sel_sf, $cb, $overhead_d+$extra_bytes);
 	my ($ack_sta, $ack_end) = ($sel_end+$rwindow, $sel_end+$rwindow+$airt);
 	$total_down_time += $airt;
 	print "# gw $sel_gw will transmit an ack (or commands) to $sel (RX$rwindow) (channel $sel_ch)\n" if ($debug == 1);
 	$gresponses{$sel_gw} += 1;
 	push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf, "d"]);
-	my $dc = $dutycycle;
-	$dc = 9 if ($rwindow == 2);
-	$gdc{$sel_gw}{$bnd} = $ack_end+$airt*$dc;
+	if ($fplan ne "US915"){
+		my $dc = $dutycycle;
+		$dc = 9 if ($rwindow == 2);
+		$gdc{$sel_gw}{$bnd} = $ack_end+$airt*$dc;
+	}
 	my $new_name = $sel_gw.$gresponses{$sel_gw}; # e.g. A1
 	# place new transmission at the correct position
 	my $i = 0;
@@ -657,24 +693,34 @@ sub schedule_downlink{
 sub gs_policy{ # gateway selection policy
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, $win) = @_;
 	my $sel_gw = undef;
-	my $bnd = $band{$sel_ch};
+	if ($fplan eq "US915"){
+		$sel_ch = $channels_d[$uplink_ch_index{$sel_ch}] if ($win == 1);
+	}
+	my $bnd;
+	if ($fplan ne "US915"){
+		$bnd = $band{$sel_ch};
+	}
 	if ($win == 2){
-		$bnd = "54";
+		$bnd = "54" if ($fplan ne "US915");
 		$sel_ch = $rx2ch;
 		if ($sel_sf < $rx2sf){
 			@$gw_rc = @{$nreachablegws{$sel}};
 		}
 		$sel_sf = $rx2sf;
 	}
-	my ($ack_sta, $ack_end) = ($sel_end+$win, $sel_end+$win+airtime($sel_sf, $overhead_d));
+	my $cb = $bw125;
+	$cb = $bw500 if ($fplan eq "US915");
+	my ($ack_sta, $ack_end) = ($sel_end+$win, $sel_end+$win+airtime($sel_sf, $cb, $overhead_d));
 	my ($min_resp, $sel_p, $min_dc) = (1, -9999999999999, 9999999999999);
 	my @avail = ();
 	
 	foreach my $g (@$gw_rc){
 		my ($gw, $p) = @$g;
 		my $is_avail = 1;
-		if ($gdc{$gw}{$bnd} > ($sel_end+$win)){
-			next;
+		if ($fplan ne "US915"){
+			if ($gdc{$gw}{$bnd} > ($sel_end+$win)){
+				next;
+			}
 		}
 		foreach my $gu (@{$gunavailability{$gw}}){
 			my ($sta, $end, $ch, $sf, $m) = @$gu;
@@ -718,7 +764,7 @@ sub gs_policy{ # gateway selection policy
 				$sel_gw = $gw;
 				$sel_p = $p;
 			}
-		}elsif ($policy == 3){ # less busy gw
+		}elsif ($policy == 3){ # least busy gw
 			if ($gdc{$gw}{$bnd} < $min_dc){
 				$min_dc = $gdc{$gw}{$bnd};
 				$sel_gw = $gw;
@@ -735,6 +781,8 @@ sub adr{ # ADR: the SF is already adjusted in min_sf; here only the transmit pow
 	my $nstep = int($mgap/3);
 	my $new_ptx = $Ptx_l[$nptx{$sel}];
 	my $new_index = $nptx{$sel};
+	my $max_ptx = $Ptx_l[-3];
+	$max_ptx = $Ptx_l[-1] if ($fplan eq "US915");
 	while ($nstep != 0){
 		if ($nstep > 0){
 			$new_ptx -= 3;
@@ -744,7 +792,7 @@ sub adr{ # ADR: the SF is already adjusted in min_sf; here only the transmit pow
 				last;
 			}
 		}else{
-			if ($new_ptx < $Ptx_l[-1]){
+			if ($new_ptx < $max_ptx){
 				$new_ptx += 3;
 				$nstep += 1;
 				$new_index += 1
@@ -766,7 +814,7 @@ sub node_col{ # handle node collisions
 		my $d = distance($gcoords{$gw}[0], $ncoords{$sel}[0], $gcoords{$gw}[1], $ncoords{$sel}[1]);
 		my $G = random_normal(1, 0, 1);
 		my $prx = $Ptx_l[$nptx{$sel}] - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
-		if ($prx < $sensis[$sel_sf-7][bwconv($bw)]){
+		if ($prx < $sensis[$sel_sf-7][bwconv($bw125)]){
 			$surpressed{$sel}{$gw} = 1;
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
 			next;
@@ -901,7 +949,7 @@ sub node_col{ # handle node collisions
 		if ($surpressed{$sel}{$gw} == 0){
 			push (@gw_rc, [$gw, $prx]);
 			# set the gw unavailable (exclude preamble) and lock to the specific Ch/SF
-			my $Tsym = (2**$sel_sf)/$bw;
+			my $Tsym = (2**$sel_sf)/$bw125;
 			my $Tpream = ($preamble + 4.25)*$Tsym;
 			push(@{$gunavailability{$gw}}, [$sel_sta+$Tpream, $sel_end, $sel_ch, $sel_sf, "u"]);
 		}
@@ -915,12 +963,14 @@ sub min_sf{
 	my $G = 0; # assume that variance is 0
 	my $Xs = $var*$G;
 	my $sf = 13;
-	my $bwi = bwconv($bw);
+	my $bwi = bwconv($bw125);
+	my $max_sf = 12;
+	$max_sf = 10 if ($fplan eq "US915");
 	foreach my $gw (keys %gcoords){
 		next if (exists $gdublicate{$gw});
 		my $gf = 13;
 		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
-		for (my $f=7; $f<=12; $f+=1){
+		for (my $f=7; $f<=$max_sf; $f+=1){
 			my $S = $sensis[$f-7][$bwi];
 			my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
 			if (($Prx - $margin) > $S){
@@ -954,7 +1004,8 @@ sub min_sf{
 	}else{
 		$npkt{$n} = $packet_size;
 	}
-	$npkt{$n} = $fpl[$sf-7] if (($npkt{$n} > $fpl[$sf-7]) || ($npkt{$n} < 1));
+	$npkt{$n} += (16 - $npkt{$n}%16) if ($npkt{$n}%16 != 0); # make the packet size multiple of 16
+	$npkt{$n} = $fpl[$sf-7] if ($npkt{$n} > $fpl[$sf-7]);
 	$npkt{$n} += $overhead_u;
 	print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
 	$sf_distr[$sf-7] += 1;
@@ -964,6 +1015,7 @@ sub min_sf{
 # a modified version of LoRaSim (https://www.lancaster.ac.uk/scc/sites/lora/lorasim.html)
 sub airtime{
 	my $sf = shift;
+	my $bw = shift;
 	my $DE = 0;      # low data rate optimization enabled (=1) or not (=0)
 	my $payload = shift;
 	if (($bw == 125000) && (($sf == 11) || ($sf == 12))){
@@ -978,6 +1030,7 @@ sub airtime{
 }
 
 sub bwconv{
+	my $bw = shift;
 	my $bwi = 0;
 	if ($bw == 125000){
 		$bwi = 1;
@@ -1020,7 +1073,8 @@ sub read_data{
 		my ($n, $x, $y) = @$node;
 		$ncoords{$n} = [$x, $y];
 		@{$overlaps{$n}} = ();
-		$nptx{$n} = scalar @Ptx_l - 1; # start with the highest Ptx
+		$nptx{$n} = (scalar @Ptx_l) - 3; # start with the highest Ptx (14 dBm)
+		$nptx{$n} = (scalar @Ptx_l) - 1 if ($fplan eq "US915"); # 20 dBm
 		$nresponse{$n} = 0;
 		$nretransmissions{$n} = 0;
 		if ($conf_num > 0){
@@ -1044,6 +1098,7 @@ sub read_data{
 			$nperiod{$n} = $period;
 		}
 		foreach my $bnd (@bands){
+			next if ($fplan eq "US915");
 			$ndc{$n}{$bnd} = -1;
 		}
 		@{$powers{$n}} = ();
@@ -1065,9 +1120,10 @@ sub read_data{
 		$gcoords{$g} = [$x, $y];
 		@{$gunavailability{$g}} = ();
 		foreach my $ch (@channels){
+			next if ($fplan eq "US915");
 			$gdc{$g}{$band{$ch}} = 0;
 		}
-		$gdc{$g}{"54"} = 0;
+		$gdc{$g}{"54"} = 0 if ($fplan ne "US915");
 		foreach my $n (keys %ncoords){
 			$surpressed{$n}{$g} = 0;
 		}
@@ -1090,18 +1146,20 @@ sub distance3d {
 }
 
 sub generate_picture{
+	my $prr = shift;
 	my ($display_x, $display_y) = (800, 800); # 800x800 pixel display pane
 	my $im = new GD::SVG::Image($display_x, $display_y);
 	my $blue = $im->colorAllocate(0,0,255);
 	my $black = $im->colorAllocate(0,0,0);
 	my $red = $im->colorAllocate(255,0,0);
 	
+	my $max_ndeliv = (max values %ndeliv);
 	foreach my $n (keys %ncoords){
 		my ($x, $y) = @{$ncoords{$n}};
 		($x, $y) = (int(($x * $display_x)/$norm_x), int(($y * $display_y)/$norm_y));
 		my $color = $im->colorAllocate(255*$nconsumption{$n}/$max_cons,0,0);
-#		my $color = $im->colorAllocate(255*(min_sf($n)-7)/5,0,0);
-		$im->filledArc($x,$y,20,20,0,360,$color);
+		$color = $im->colorAllocate(255-127*$ndeliv{$n}/$max_ndeliv,255*$ndeliv{$n}/$max_ndeliv,255-255*$ndeliv{$n}/$max_ndeliv) if ($prr == 1);
+		$im->filledArc($x,$y,10,10,0,360,$color);
 	}
 	
 	foreach my $g (keys %gcoords){

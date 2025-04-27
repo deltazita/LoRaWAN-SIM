@@ -7,7 +7,7 @@
 use strict;
 use Math::Random;
 
-(@ARGV==3) || die "usage: $0 <terrain_side_size_(m)> <num_of_nodes> <num_of_gateways>\ne.g. $0 100 500 10\n";
+(@ARGV==3) || die "usage: $0 <terrain_side_size_(m)> <num_of_nodes> <num_of_gateways>\ne.g. $0 2000 500 2\n";
 
 my $tx = $ARGV[0];
 my $nodes = $ARGV[1];

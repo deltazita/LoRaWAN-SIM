@@ -1,31 +1,22 @@
 # LoRaWAN-SIM
 A LoRaWAN simulator for confirmed/unconfirmed transmissions and multiple gateways
 
-The first version of the simulator was used here:
+## List of papers where the simulator (or a variant) has been used:
+- D. Zorbas, C. Caillouet, K. Abdelfadeel, D. Pesch, "Optimal Data Collection Time in LoRa Networks: a Time-Slotted Approach", Sensors, Vol. 21, no. 4, 2021
+- D. Zorbas, "Improving LoRaWAN Downlink Performance in the EU868 Spectrum", Computer Communications, Vol. 195, Nov. 2022, pp. 303-314
+- D. Zorbas, "Downlink Spreading Factor Selection in LoRaWAN", Computer Communications, Vol. 215, Feb. 2024, pp. 112-119
+- D. Zorbas and A. Sabyrbek, "Supporting Critical Downlink Traffic in LoRaWAN", Computer Communications, Vol. 228, 107981, Dec. 2024
+- D. Zorbas, "LoRaWAN Network Coexistence in the EU868 Spectrum", 9th IEEE Conference on Standards for Communications and Networking, Belgrade, Serbia, Nov. 2024
+- S. Javed, D. Zorbas, "A LoRaWAN Adaptive Retransmission Mechanism", IEEE Conference on Standards for Communications and Networking, Munich, Germany, Nov. 2023
+- S. Javed, D. Zorbas, "Downlink Traffic Demand-Based Gateway Activation in LoRaWAN", 28th IEEE Symposium on Computers and Communications (ISCC), Tunis, Tunisia, July 2023
+- S. Javed, D. Zorbas, "LoRaWAN Downlink Policies for Improved Fairness", IEEE Conference on Standards for Communications and Networking (CSCN), Thessaloniki, Greece, Nov. 2022
 
-@article{zorbas2021optimal,
-  AUTHOR = {Zorbas, Dimitrios and Caillouet, Christelle and Abdelfadeel Hassan, Khaled and Pesch, Dirk},<br />
-  TITLE = {{Optimal Data Collection Time in LoRa Networks—A Time-Slotted Approach}},<br />
-  JOURNAL = {Sensors},<br />
-  VOLUME = {21},<br />
-  YEAR = {2021},<br />
-  NUMBER = {4}<br />
-}
-
-- Downlink policies:
-
-@inproceedings{zorbas2022policies,
-  author = {Javed, Shahzeb and Zorbas, Dimitrios},<br />
-  title = {{LoRaWAN Downlink Policies for Improved Fairness}},<br />
-  booktitle = {IEEE Conference on Standards for Communications and Networking (CSCN '22)},<br />
-  year = {2022},<br />
-  pages = {1--6},<br />
-  month = {Nov},<br />
-  location={Thessaloniki, Greece},<br />
-  publisher={IEEE}<br />
-}
+## List of companies that use or have used the simulator (or a variant):
+- PV Hardware
+- Kazakh Railways
 
 ## Features:
+- EU868 or US915 frequency plans
 - Multiple half-duplex gateways
 - 1% radio duty cycle for uplink transmissions
 - 1 or 10% radio duty cycle for downlink transmissions
@@ -57,7 +48,7 @@ perl LoRaWAN.pl packets_per_hour simulation_time_(hours) terrain.txt
 ### Example with 3000x3000m terrain size, 1000 nodes, 5 gateways, 1pkt/5min, 10h sim time:
 ```
 perl generate_terrain.pl 3000 1000 5 > terrain.txt
-(or perl generate_terrain.pl 3000 1000 > terrain.txt to automatically select the number of required gateways)
+(or perl generate_terrain-m.pl 3000 1000 > terrain.txt to automatically select the number of required gateways)
 perl LoRaWAN.pl 12 10 terrain.txt
 ```
 
