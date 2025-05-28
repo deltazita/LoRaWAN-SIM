@@ -1,6 +1,10 @@
 CHANGELOG
 ----------
 v2025.04.27
+* %surpressed items are now deleted once transmissions are preceded to reduce memory consumption
+* removed %nacked_uniq as it is not required anymore
+
+v2025.04.27
 * the US915 version is now included in the EU868 version. It can be selected in line 86
 * the US915 frequency plan does not currently support SF8BW500 (TODO)
 * confirmed transmissions are disabled by default (see line 124 to enable them)

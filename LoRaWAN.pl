@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                  v2025.04.27                                    #
+#                                  v2025.05.27                                    #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum
@@ -57,7 +57,6 @@ my %npkt = (); # packet size per node
 my %ntotretr = (); # number of retransmissions per node (total)
 my %nlast_ch = (); # last transmission time
 my %ndeliv_seq = (); # 1 = unique packet seq exists (for confirmed uplinks)
-my %nacked_uniq = (); # 1 = unique packet seq has been acked (for confirmed uplinks)
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -175,7 +174,6 @@ foreach my $n (keys %ncoords){
 	print "# $n will transmit from $start to $stop (SF $sf)\n" if ($debug == 1);
 	$nunique{$n} = 1;
 	$ndeliv_seq{$n}{$nunique{$n}} = 1;
-	$nacked_uniq{$n}{$nunique{$n}} = 1 if ($nconfirmed{$n} == 1);
 	my $ch = $channels[rand @channels];
 	push (@init_trans, [$n, $start, $stop, $ch, $sf, $nunique{$n}]);
 	$nconsumption{$n} += $airt * $Ptx_w[$nptx{$n}] + $airt * $Pidle_w;
@@ -228,7 +226,7 @@ while (1){
 	
 	if ($sel =~ /^[0-9]/){ # if the packet is an uplink transmission
 		
-		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf); # check collisions and return a list of gws that received the uplink pkt
+		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq); # check collisions and return a list of gws that received the uplink pkt
 		my $rwindow = 0;
 		my $failed = 0;
 		$nlast_ch{$sel} = $sel_ch;
@@ -352,7 +350,6 @@ while (1){
 					$nretransmissions{$sel} = 0;
 					$new_trans = 1;
 					print "# $sel 's packet lost!\n" if ($debug == 1);
-					delete $nacked_uniq{$sel}{$sel_seq};
 				}
 				# the node stays on only for the duration of the preamble for both receive windows + in idle mode between RX windows
 				$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw125)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw125 * ($Prx_w + $Pidle_w);
@@ -390,7 +387,6 @@ while (1){
 				if ($nconfirmed{$sel} == 1){
 					$total_retrans += 1;
 					$ndeliv_seq{$sel}{$nunique{$sel}} = 1;
-					$nacked_uniq{$sel}{$nunique{$sel}} = 1;
 				}
 			}
 			$total_trans += 1 if ($sel_sta < $sim_time);
@@ -400,7 +396,7 @@ while (1){
 			$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
 		}
 		foreach my $g (keys %gcoords){
-			$surpressed{$sel}{$g} = 0;
+			delete $surpressed{$sel}{$g}{$sel_seq};
 		}
 		
 		
@@ -512,10 +508,7 @@ while (1){
 			if ($nconfirmed{$dest} == 1){
 				print "# ack successfully received, $dest 's transmission has been acked\n" if ($debug == 1);
 				$ntotretr{$dest} += $nretransmissions{$dest};
-				if (exists $nacked_uniq{$dest}{$nunique{$dest}}){
-					$nacked{$dest} += 1;
-					delete $nacked_uniq{$dest}{$nunique{$dest}};
-				}
+				$nacked{$dest} += 1;
 				$nretransmissions{$dest} = 0;
 				$new_trans = 1;
 			}
@@ -543,7 +536,6 @@ while (1){
 					$nretransmissions{$dest} = 0;
 					$new_trans = 1;
 					print "# $dest 's packet lost (no ack received)!\n" if ($debug == 1);
-					delete $nacked_uniq{$dest}{$nunique{$dest}};
 				}
 			}
 			my $cb = $bw125;
@@ -574,7 +566,6 @@ while (1){
 			if (($new_trans == 1) && ($new_start < $sim_time)){ # do not count transmissions that exceed the simulation time
 				$nunique{$dest} += 1;
 				$ndeliv_seq{$dest}{$nunique{$dest}} = 1;
-				$nacked_uniq{$dest}{$nunique{$dest}} = 1;
 			}
 			my $new_end = $new_start + $at;
 			my $i = 0;
@@ -806,16 +797,16 @@ sub adr{ # ADR: the SF is already adjusted in min_sf; here only the transmit pow
 }
 
 sub node_col{ # handle node collisions
-	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf) = @_;
+	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @_;
 	# check for collisions with other transmissions (time, SF, power) per gw
 	my @gw_rc = ();
 	foreach my $gw (keys %gcoords){
-		next if ($surpressed{$sel}{$gw} == 1);
+		next if (exists $surpressed{$sel}{$gw}{$sel_seq});
 		my $d = distance($gcoords{$gw}[0], $ncoords{$sel}[0], $gcoords{$gw}[1], $ncoords{$sel}[1]);
 		my $G = random_normal(1, 0, 1);
 		my $prx = $Ptx_l[$nptx{$sel}] - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
 		if ($prx < $sensis[$sel_sf-7][bwconv($bw125)]){
-			$surpressed{$sel}{$gw} = 1;
+			$surpressed{$sel}{$gw}{$sel_seq} = 1;
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
 			next;
 		}
@@ -832,7 +823,7 @@ sub node_col{ # handle node collisions
 			}
 		}
 		if ($is_available == 0){
-			$surpressed{$sel}{$gw} = 1;
+			$surpressed{$sel}{$gw}{$sel_seq} = 1;
 			print "# gw not available for uplink (channel $sel_ch, SF $sel_sf)\n" if ($debug == 1);
 			next;
 		}
@@ -855,32 +846,32 @@ sub node_col{ # handle node collisions
 				my $prx_ = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d_/$dref) + rand(1)*$var);
 				if ($overlap == 3){
 					if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf-7]) ){ # both collide
-						$surpressed{$sel}{$gw} = 1;
-						$surpressed{$n}{$gw} = 1;
+						$surpressed{$sel}{$gw}{$sel_seq} = 1;
+						$surpressed{$n}{$gw}{$seq} = 1;
 						print "# $sel collided together with $n at gateway $gw\n" if ($debug == 1);
 					}
 					if (($prx_ - $prx) > $thresholds[$sel_sf-7][$sf-7]){ # n suppressed sel
-						$surpressed{$sel}{$gw} = 1;
+						$surpressed{$sel}{$gw}{$sel_seq} = 1;
 						print "# $sel surpressed by $n at gateway $gw\n" if ($debug == 1);
 					}
 					if (($prx - $prx_) > $thresholds[$sf-7][$sel_sf-7]){ # sel suppressed n
-						$surpressed{$n}{$gw} = 1;
+						$surpressed{$n}{$gw}{$seq} = 1;
 						print "# $n surpressed by $sel at gateway $gw\n" if ($debug == 1);
 					}
 				}
 				if (($overlap == 1) && ($full_collision == 1)){ # non-orthogonality
 					if (($prx - $prx_) > $thresholds[$sel_sf-7][$sf-7]){
 						if (($prx_ - $prx) <= $thresholds[$sf-7][$sel_sf-7]){
-							$surpressed{$n}{$gw} = 1;
+							$surpressed{$n}{$gw}{$seq} = 1;
 							print "# $n surpressed by $sel\n" if ($debug == 1);
 						}
 					}else{
 						if (($prx_ - $prx) > $thresholds[$sf-7][$sel_sf-7]){
-							$surpressed{$sel}{$gw} = 1;
+							$surpressed{$sel}{$gw}{$sel_seq} = 1;
 							print "# $sel surpressed by $n\n" if ($debug == 1);
 						}else{
-							$surpressed{$sel}{$gw} = 1;
-							$surpressed{$n}{$gw} = 1;
+							$surpressed{$sel}{$gw}{$sel_seq} = 1;
+							$surpressed{$n}{$gw}{$seq} = 1;
 							print "# $sel collided together with $n\n" if ($debug == 1);
 						}
 					}
@@ -917,11 +908,11 @@ sub node_col{ # handle node collisions
 					my $prx_ = $Ptx_gw - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
 					if ($overlap == 3){
 						if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
-							$surpressed{$sel}{$gw} = 1;
+							$surpressed{$sel}{$gw}{$sel_seq} = 1;
 							print "# $sel collided together with $n at gateway $gw\n" if ($debug == 1);
 						}
 						if (($prx_ - $prx) > $thresholds[$sel_sf-7][$sf_-7]){ # n suppressed sel
-							$surpressed{$sel}{$gw} = 1;
+							$surpressed{$sel}{$gw}{$sel_seq} = 1;
 							print "# $sel surpressed by $n at gateway $gw\n" if ($debug == 1);
 						}
 						if (($prx - $prx_) > $thresholds[$sf_-7][$sel_sf-7]){ # sel suppressed n
@@ -935,10 +926,10 @@ sub node_col{ # handle node collisions
 							}
 						}else{
 							if (($prx_ - $prx) > $thresholds[$sf_-7][$sel_sf-7]){
-								$surpressed{$sel}{$gw} = 1;
+								$surpressed{$sel}{$gw}{$sel_seq} = 1;
 								print "# $sel surpressed by $n\n" if ($debug == 1);
 							}else{
-								$surpressed{$sel}{$gw} = 1;
+								$surpressed{$sel}{$gw}{$sel_seq} = 1;
 								print "# $sel collided together with $n\n" if ($debug == 1);
 							}
 						}
@@ -946,7 +937,7 @@ sub node_col{ # handle node collisions
 				}
 			}
 		}
-		if ($surpressed{$sel}{$gw} == 0){
+		if (!exists $surpressed{$sel}{$gw}{$sel_seq}){
 			push (@gw_rc, [$gw, $prx]);
 			# set the gw unavailable (exclude preamble) and lock to the specific Ch/SF
 			my $Tsym = (2**$sel_sf)/$bw125;
@@ -1124,9 +1115,6 @@ sub read_data{
 			$gdc{$g}{$band{$ch}} = 0;
 		}
 		$gdc{$g}{"54"} = 0 if ($fplan ne "US915");
-		foreach my $n (keys %ncoords){
-			$surpressed{$n}{$g} = 0;
-		}
 		@{$overlaps{$g}} = ();
 		$gresponses{$g} = 0;
 	}
