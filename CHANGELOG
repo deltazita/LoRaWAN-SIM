@@ -1,6 +1,6 @@
 CHANGELOG
 ----------
-v2025.04.27
+v2025.05.27
 * %surpressed items are now deleted once transmissions are preceded to reduce memory consumption
 * removed %nacked_uniq as it is not required anymore
 
