@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                  v2025.05.27                                    #
+#                                  v2025.08.13                                    #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum
@@ -65,6 +65,7 @@ my %gdc = (); # gw duty cycle (1% uplink channel is used for RX1, 10% downlink c
 my %gresponses = (); # acks carried out per gw
 my %gdest = (); # contains downlink information [node, sf, RX1/2, channel, power index]
 my %gdublicate = (); # exists if it's a double gw
+my %gtime = (); # gateway downlink time per band or channel
 
 # LoRa PHY and LoRaWAN parameters
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW
@@ -612,13 +613,23 @@ foreach my $n (keys %ncoords){
 }
 printf "Unconfirmed uplink fairness = %.3f\n", stddev(\@fairs) if (scalar @fairs > 0); # for unconfirmed traffic
 print "-----\n";
-if ($confirmed_perc > 0){
-	print "No GW available in RX1 = $no_rx1 times\n";
-	print "No GW available in RX1 or RX2 = $no_rx2 times\n";
-	print "Total downlink time = $total_down_time sec\n";
-	foreach my $g (sort keys %gcoords){
-		print "GW $g sent out $gresponses{$g} acks and commands\n";
+print "No GW available in RX1 = $no_rx1 times\n";
+print "No GW available in RX1 or RX2 = $no_rx2 times\n";
+print "Total downlink time = $total_down_time sec\n";
+foreach my $g (sort keys %gcoords){
+	print "GW $g sent out $gresponses{$g} acks and commands\n";
+	if ($fplan eq "EU868"){
+		foreach my $bnd (@bands){
+			printf "\t - Total duty cycle in band $bnd: %.2f%%\n", $gtime{$g}{$bnd}*100/$sim_end;
+		}
+	}elsif ($fplan eq "US915"){
+		foreach my $ch (@channels_d){
+			printf "\t - Total duty cycle in channel %.1f MHz: %.2f%%\n", $ch/1e6, $gtime{$g}{$ch}*100/$sim_end;
+		}
 	}
+	printf "\t - Total duty cycle in RX2 channel: %.2f%%\n", $gtime{$g}{$rx2ch}*100/$sim_end;
+}
+if ($confirmed_perc > 0){
 	@fairs = ();
 	my $avgretr = 0;
 	foreach my $n (keys %ncoords){
@@ -627,7 +638,7 @@ if ($confirmed_perc > 0){
 		push(@fairs, $nacked{$n}/$nunique{$n});
 		$avgretr += $ntotretr{$n}/$nunique{$n};
 	}
-	printf "Downlink fairness = %.3f\n", stddev(\@fairs);
+	printf "Downlink fairness = %.3f\n", stddev(\@fairs) if (scalar @fairs > 0);
 	printf "Avg number of retransmissions = %.3f\n", $avgretr/(scalar keys %ntotretr);
 	printf "Stdev of retransmissions = %.3f\n", (stddev values %ntotretr);
 	print "-----\n";
@@ -645,7 +656,11 @@ sub schedule_downlink{
 	my ($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, $rwindow, $new_index) = @_;
 	my $bnd;
 	if ($fplan eq "US915"){
-		$sel_ch = $channels_d[$uplink_ch_index{$sel_ch}] if ($rwindow == 1);
+		if ($rwindow == 1){
+			$sel_ch = $channels_d[$uplink_ch_index{$sel_ch}];
+		}else{
+			$sel_ch = $rx2ch;
+		}
 	} else {
 		$bnd = "54"; # band: 54 for 869525000 RX2
 		$bnd = $band{$sel_ch} if ($rwindow == 1);
@@ -676,6 +691,11 @@ sub schedule_downlink{
 		last if ($sta > $ack_sta);
 		$i += 1;
 	}
+	###
+	$bnd = $rx2ch if ($rwindow == 2);
+	$bnd = $sel_ch if ($fplan eq "US915");
+	$gtime{$sel_gw}{$bnd} += $airt;
+	###
 	$appacked{$sel} += 1 if ($nconfirmed{$sel} == 1);
 	splice(@{$sorted_t{$sel_ch}}, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $sel_sf, $appacked{$sel}]);
 	push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, $new_index]);
@@ -1114,6 +1134,15 @@ sub read_data{
 			next if ($fplan eq "US915");
 			$gdc{$g}{$band{$ch}} = 0;
 		}
+		foreach my $bnd (@bands){
+			$gtime{$g}{$bnd} = 0;
+		}
+		if ($fplan eq "US915"){
+			foreach my $ch (@channels_d){
+				$gtime{$g}{$ch} = 0;
+			}
+		}
+		$gtime{$g}{$rx2ch} = 0;
 		$gdc{$g}{"54"} = 0 if ($fplan ne "US915");
 		@{$overlaps{$g}} = ();
 		$gresponses{$g} = 0;

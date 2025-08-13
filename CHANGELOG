@@ -1,5 +1,10 @@
 CHANGELOG
 ----------
+v2025.08.13
+* added statistics about the duty cycle of each gateway per band/channel (useful with confirmed traffic)
+* downlink statistics of gateways are shown even with unconfirmed traffic (minor traffic due to ADR tx commands)
+* updated the test file to include end-devices of all SFs and added the terrain svg file
+
 v2025.05.27
 * %surpressed items are now deleted once transmissions are preceded to reduce memory consumption
 * removed %nacked_uniq as it is not required anymore
