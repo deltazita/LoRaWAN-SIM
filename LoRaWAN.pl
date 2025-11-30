@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                  v2025.08.13                                    #
+#                                  v2025.11.30                                    #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum
@@ -60,7 +60,9 @@ my %ndeliv_seq = (); # 1 = unique packet seq exists (for confirmed uplinks)
 
 # gw attributes
 my %gcoords = (); # gw coordinates
-my %gunavailability = (); # unavailable gw time due to downlink or locked to another transmission
+my @gw_ids = (); # just for iterations
+my %gunavailability_d = (); # unavailable gw time due to downlinks
+my %gunavailability_u = (); # unavailable gw time due to uplinks
 my %gdc = (); # gw duty cycle (1% uplink channel is used for RX1, 10% downlink channel is used for RX2)
 my %gresponses = (); # acks carried out per gw
 my %gdest = (); # contains downlink information [node, sf, RX1/2, channel, power index]
@@ -160,6 +162,9 @@ my %appsuccess = (); # counts the number of packets that received from at least 
 my %nogwavail = (); # counts how many time no gw was available (keys = nodes)
 my %powers = (); # contains last 10 received powers per node
 
+# precomputations
+my %pl_ng;    # path-loss (without shadowing) per node-gw pair
+my %dist_ng;  # node-gw distance 
 
 read_data(); # read terrain file
 
@@ -193,13 +198,22 @@ undef @init_trans;
 while (1){
 	print "-------------------------------\n" if ($debug == 1);
 	foreach my $ch (keys %sorted_t){
-		if (exists $sorted_t{$ch}){
-			delete $sorted_t{$ch} if (scalar @{$sorted_t{$ch}} == 0);
+		delete $sorted_t{$ch} if @{$sorted_t{$ch}} == 0;
+	}
+	
+	# select the channel with earliest transmission among all first transmissions
+# 	my $min_ch = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t)[0];
+	my $min_ch;
+	my $min_t;
+	while (my ($ch, $list) = each %sorted_t){
+		my $t = $list->[0][1];  # start time
+		if (!defined $min_ch || $t < $min_t){
+			$min_ch = $ch;
+			$min_t  = $t;
 		}
 	}
-	# select the channel with earliest transmission among all first transmissions
-	my $min_ch = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t)[0];
-	last if (!defined $min_ch);
+	last if !defined $min_ch;
+
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
 	if (exists $ncoords{$sel}){ # just a progress trick
 		if ($sel == 1){
@@ -290,20 +304,6 @@ while (1){
 				}
 			}
 			###
-			
-			# remove the examined tuple of gw unavailability
-			foreach my $gwpr (@$gw_rc){
-				my ($gw, $pr) = @$gwpr;
-				my $index = 0;
-				foreach my $tuple (@{$gunavailability{$gw}}){
-					my ($sta, $end, $ch, $sf, $m) = @$tuple;
-					if (($end == $sel_end) && ($ch == $sel_ch) && ($sf == $sel_sf) && ($m eq "u")){
-						last;
-					}
-					$index += 1;
-				}
-				splice @{$gunavailability{$gw}}, $index, 1;
-			}
 			$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw125)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw125 * ($Prx_w + $Pidle_w);
 			$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw125 * ($Prx_w + $Pidle_w);
 			
@@ -396,7 +396,7 @@ while (1){
 			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
 			$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
 		}
-		foreach my $g (keys %gcoords){
+		foreach my $g (@gw_ids){
 			delete $surpressed{$sel}{$g}{$sel_seq};
 		}
 		
@@ -408,13 +408,13 @@ while (1){
 		# remove the unnecessary tuples from gw unavailability
 		my @indices = ();
 		my $index = 0;
-		foreach my $tuple (@{$gunavailability{$sel}}){
-			my ($sta, $end, $ch, $sf, $m) = @$tuple;
+		foreach my $tuple (@{$gunavailability_d{$sel}}){
+			my ($sta, $end) = @$tuple;
 			push (@indices, $index) if ($end < $sel_sta);
 			$index += 1;
 		}
 		for (sort {$b<=>$a} @indices){
-			splice @{$gunavailability{$sel}}, $_, 1;
+			splice @{$gunavailability_d{$sel}}, $_, 1;
 		}
 		
 		# look for the examined transmission in gdest, get some info, and then remove it 
@@ -434,8 +434,8 @@ while (1){
 		splice @{$gdest{$sel}}, $index, 1;
 		# check if the transmission can reach the node
 		my $G = random_normal(1, 0, 1);
-		my $d = distance($gcoords{$sel}[0], $ncoords{$dest}[0], $gcoords{$sel}[1], $ncoords{$dest}[1]);
-		my $prx = $Ptx_gw - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
+		my $d = $dist_ng{$dest}{$sel};
+		my $prx = $pl_ng{$dest}{$sel} + $G*$var;
 		my $cb = $bw125;
 		$cb = $bw500 if ($fplan eq "US915");
 		if ($prx < $sensis[$sel_sf-7][bwconv($cb)]){
@@ -466,15 +466,16 @@ while (1){
 			# power 
 			my $d_ = 0;
 			my $p = 0;
+			my $prx_ = 0;
 			if ($n =~ /^[0-9]/){
+				# there is no precomputed dist/path-loss for node-to-node
 				$d_ = distance($ncoords{$dest}[0], $ncoords{$n}[0], $ncoords{$dest}[1], $ncoords{$n}[1]);
-				$p = $Ptx_l[$nptx{$n}];
+				$prx_ = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d_/$dref)) - $G_*$var;
 			}else{
-				$d_ = distance($ncoords{$dest}[0], $gcoords{$n}[0], $ncoords{$dest}[1], $gcoords{$n}[1]);
+				$d = $dist_ng{$dest}{$n};
 				$d_ = 0.2 if ($d_ == 0);
-				$p = $Ptx_gw;
+				$prx_ = $Ptx_gw - $pl_ng{$dest}{$n} - $G_*$var;
 			}
-			my $prx_ = $p - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
 			if ($overlap == 3){
 				if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
 					$failed = 1;
@@ -616,7 +617,7 @@ print "-----\n";
 print "No GW available in RX1 = $no_rx1 times\n";
 print "No GW available in RX1 or RX2 = $no_rx2 times\n";
 print "Total downlink time = $total_down_time sec\n";
-foreach my $g (sort keys %gcoords){
+foreach my $g (@gw_ids){
 	print "GW $g sent out $gresponses{$g} acks and commands\n";
 	if ($fplan eq "EU868"){
 		foreach my $bnd (@bands){
@@ -677,7 +678,7 @@ sub schedule_downlink{
 	$total_down_time += $airt;
 	print "# gw $sel_gw will transmit an ack (or commands) to $sel (RX$rwindow) (channel $sel_ch)\n" if ($debug == 1);
 	$gresponses{$sel_gw} += 1;
-	push (@{$gunavailability{$sel_gw}}, [$ack_sta, $ack_end, $sel_ch, $sel_sf, "d"]);
+	push (@{$gunavailability_d{$sel_gw}}, [$ack_sta, $ack_end]);
 	if ($fplan ne "US915"){
 		my $dc = $dutycycle;
 		$dc = 9 if ($rwindow == 2);
@@ -733,8 +734,13 @@ sub gs_policy{ # gateway selection policy
 				next;
 			}
 		}
-		foreach my $gu (@{$gunavailability{$gw}}){
-			my ($sta, $end, $ch, $sf, $m) = @$gu;
+		my ($usta, $uend, $sf) = @{$gunavailability_u{$gw}{$sel_ch}};
+		if ( (($ack_sta >= $usta) && ($ack_sta <= $uend)) || (($ack_end <= $uend) && ($ack_end >= $usta)) ){
+			$is_avail = 0;
+			last;
+		}
+		foreach my $gu (@{$gunavailability_d{$gw}}){
+			my ($sta, $end) = @$gu;
 			if ( (($ack_sta >= $sta) && ($ack_sta <= $end)) || (($ack_end <= $end) && ($ack_end >= $sta)) ){
 				$is_avail = 0;
 				last;
@@ -820,11 +826,11 @@ sub node_col{ # handle node collisions
 	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @_;
 	# check for collisions with other transmissions (time, SF, power) per gw
 	my @gw_rc = ();
-	foreach my $gw (keys %gcoords){
+	foreach my $gw (@gw_ids){
 		next if (exists $surpressed{$sel}{$gw}{$sel_seq});
-		my $d = distance($gcoords{$gw}[0], $ncoords{$sel}[0], $gcoords{$gw}[1], $ncoords{$sel}[1]);
+		my $d = $dist_ng{$sel}{$gw};
 		my $G = random_normal(1, 0, 1);
-		my $prx = $Ptx_l[$nptx{$sel}] - ($Lpld0 + 10*$gamma * log10($d/$dref) + $G*$var);
+		my $prx = $Ptx_l[$nptx{$sel}] - $pl_ng{$sel}{$gw} - $G*$var;
 		if ($prx < $sensis[$sel_sf-7][bwconv($bw125)]){
 			$surpressed{$sel}{$gw}{$sel_seq} = 1;
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
@@ -832,11 +838,14 @@ sub node_col{ # handle node collisions
 		}
 		# check if the gw is available for uplink
 		my $is_available = 1;
-		foreach my $gu (@{$gunavailability{$gw}}){
-			my ($sta, $end, $ch, $sf, $m) = @$gu;
-			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end))){
-				# the gw has either locked to another transmission with the same ch/sf OR is being used for downlink
-				if ( ($m eq "d") || (($m eq "u") && ($sel_ch == $ch) && ($sel_sf == $sf)) ){
+		my ($usta, $uend, $sf) = @{$gunavailability_u{$gw}{$sel_ch}};
+		if ( (($sel_sta >= $usta) && ($sel_sta <= $uend)) || (($sel_end <= $uend) && ($sel_end >= $usta)) ){
+			$is_available = 0 if ($sf == $sel_sf);
+		}
+		if ($is_available == 1){
+			foreach my $gu (@{$gunavailability_d{$gw}}){
+				my ($sta, $end) = @$gu;
+				if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end))){
 					$is_available = 0;
 					last;
 				}
@@ -862,8 +871,8 @@ sub node_col{ # handle node collisions
 					$overlap += 2;
 				}
 				# power 
-				my $d_ = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
-				my $prx_ = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d_/$dref) + rand(1)*$var);
+				$d = $dist_ng{$n}{$gw};
+				my $prx_ = $Ptx_l[$nptx{$n}] - $pl_ng{$n}{$gw} - random_normal(1, 0, 1)*$var;
 				if ($overlap == 3){
 					if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf-7]) ){ # both collide
 						$surpressed{$sel}{$gw}{$sel_seq} = 1;
@@ -923,7 +932,7 @@ sub node_col{ # handle node collisions
 						$overlap += 2;
 					}
 					# power 
-					my $d_ = distance($gcoords{$gw}[0], $gcoords{$n}[0], $gcoords{$gw}[1], $gcoords{$n}[1]);
+					my $d_ = distance($gcoords{$gw}[0], $gcoords{$n}[0], $gcoords{$gw}[1], $gcoords{$n}[1]); # no precomputation here
 					$d_ = 0.2 if ($d_ == 0);
 					my $prx_ = $Ptx_gw - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
 					if ($overlap == 3){
@@ -959,10 +968,11 @@ sub node_col{ # handle node collisions
 		}
 		if (!exists $surpressed{$sel}{$gw}{$sel_seq}){
 			push (@gw_rc, [$gw, $prx]);
-			# set the gw unavailable (exclude preamble) and lock to the specific Ch/SF
+			# set the gw unavailable (exclude preamble's first 3 symbols) and lock to the specific transmission
 			my $Tsym = (2**$sel_sf)/$bw125;
-			my $Tpream = ($preamble + 4.25)*$Tsym;
-			push(@{$gunavailability{$gw}}, [$sel_sta+$Tpream, $sel_end, $sel_ch, $sel_sf, "u"]);
+			my $Tpream = (3 + 4.25)*$Tsym;
+# 			push(@{$gunavailability{$gw}}, [$sel_sta+$Tpream, $sel_end, $sel_ch, $sel_sf, "u"]);
+			$gunavailability_u{$gw}{$sel_ch} = [$sel_sta+$Tpream, $sel_end, $sel_sf];
 		}
 	}
 	@{$overlaps{$sel}} = ();
@@ -977,13 +987,13 @@ sub min_sf{
 	my $bwi = bwconv($bw125);
 	my $max_sf = 12;
 	$max_sf = 10 if ($fplan eq "US915");
-	foreach my $gw (keys %gcoords){
+	foreach my $gw (@gw_ids){
 		next if (exists $gdublicate{$gw});
 		my $gf = 13;
-		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
+		my $d0 = $dist_ng{$n}{$gw};
 		for (my $f=7; $f<=$max_sf; $f+=1){
 			my $S = $sensis[$f-7][$bwi];
-			my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
+			my $Prx = $Ptx_l[$nptx{$n}] - $pl_ng{$n}{$gw} - $Xs;
 			if (($Prx - $margin) > $S){
 				$gf = $f;
 				$f = 13;
@@ -993,10 +1003,10 @@ sub min_sf{
 		$sf = $gf if ($gf < $sf);
 	}
 	# check which gateways can be reached with rx2sf
-	foreach my $gw (keys %gcoords){
-		my $d0 = distance($gcoords{$gw}[0], $ncoords{$n}[0], $gcoords{$gw}[1], $ncoords{$n}[1]);
+	foreach my $gw (@gw_ids){
+		my $d0 = $dist_ng{$n}{$gw};
 		my $S = $sensis[$rx2sf-7][$bwi];
-		my $Prx = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d0/$dref) + $Xs);
+		my $Prx = $Ptx_l[$nptx{$n}] - $pl_ng{$n}{$gw} - $Xs;
 		if (($Prx - $margin) > $S){
 			push(@{$nreachablegws{$n}}, [$gw, $Prx]);
 		}
@@ -1024,21 +1034,24 @@ sub min_sf{
 }
 
 # a modified version of LoRaSim (https://www.lancaster.ac.uk/scc/sites/lora/lorasim.html)
+my %airtime_cache; # let's cache already used calculations
 sub airtime{
-	my $sf = shift;
-	my $bw = shift;
-	my $DE = 0;      # low data rate optimization enabled (=1) or not (=0)
-	my $payload = shift;
-	if (($bw == 125000) && (($sf == 11) || ($sf == 12))){
-		# low data rate optimization mandated for BW125 with SF11 and SF12
-		$DE = 1;
-	}
+	my ($sf, $bw, $payload) = @_;
+	my $key = "$sf:$bw:$payload";
+	return $airtime_cache{$key} if exists $airtime_cache{$key};
+	
+	my $DE = 0;
+	$DE = 1 if (($bw == 125000) && (($sf == 11) || ($sf == 12)));
 	my $Tsym = (2**$sf)/$bw;
 	my $Tpream = ($preamble + 4.25)*$Tsym;
-	my $payloadSymbNB = 8 + max( ceil((8.0*$payload-4.0*$sf+28+16*$CRC-20*$H)/(4.0*($sf-2*$DE)))*($cr+4), 0 );
+	my $payloadSymbNB = 8 + max( ceil((8.0*$payload-4.0*$sf+28+16*$CRC-20*$H) /	(4.0*($sf-2*$DE))) * ($cr+4), 0 );
 	my $Tpayload = $payloadSymbNB * $Tsym;
-	return ($Tpream + $Tpayload);
+	
+	my $T = $Tpream + $Tpayload;
+	$airtime_cache{$key} = $T;
+	return $T;
 }
+
 
 sub bwconv{
 	my $bw = shift;
@@ -1129,11 +1142,13 @@ sub read_data{
 	foreach my $gw (@gateways){
 		my ($g, $x, $y) = @$gw;
 		$gcoords{$g} = [$x, $y];
-		@{$gunavailability{$g}} = ();
+		@{$gunavailability_d{$g}} = ();
 		foreach my $ch (@channels){
 			next if ($fplan eq "US915");
 			$gdc{$g}{$band{$ch}} = 0;
+			$gunavailability_u{$g}{$ch} = [-1, -1, 0];
 		}
+		$gunavailability_u{$g}{$rx2ch} = [-1, -1, 0];
 		foreach my $bnd (@bands){
 			$gtime{$g}{$bnd} = 0;
 		}
@@ -1150,16 +1165,26 @@ sub read_data{
 	for (my $i=7; $i<13; $i++){
 		$sf_retrans{$i} = 0;
 	}
+	
+	# precompute nodes-gws distances/path-losses
+	foreach my $n (keys %ncoords){
+		my ($nx, $ny) = @{$ncoords{$n}};
+		foreach my $g (keys %gcoords){
+			my ($gx, $gy) = @{$gcoords{$g}};
+			my $dx = $gx - $nx;
+			my $dy = $gy - $ny;
+			my $d  = sqrt($dx*$dx + $dy*$dy);
+			$dist_ng{$n}{$g} = $d;
+			$pl_ng{$n}{$g} = $Lpld0 + 10 * $gamma * log($d/$dref) / log(10);
+		}
+	}
+	# let's use this one for gw iterations (instead of %gcoords)
+	@gw_ids = sort { $a cmp $b } keys %gcoords;
 }
 
 sub distance {
 	my ($x1, $x2, $y1, $y2) = @_;
 	return sqrt( (($x1-$x2)*($x1-$x2))+(($y1-$y2)*($y1-$y2)) );
-}
-
-sub distance3d {
-	my ($x1, $x2, $y1, $y2, $z1, $z2) = @_;
-	return sqrt( (($x1-$x2)*($x1-$x2))+(($y1-$y2)*($y1-$y2))+(($z1-$z2)*($z1-$z2)) );
 }
 
 sub generate_picture{
@@ -1179,7 +1204,7 @@ sub generate_picture{
 		$im->filledArc($x,$y,10,10,0,360,$color);
 	}
 	
-	foreach my $g (keys %gcoords){
+	foreach my $g (@gw_ids){
 		next if (exists $gdublicate{$g});
 		my ($x, $y) = @{$gcoords{$g}};
 		($x, $y) = (int(($x * $display_x)/$norm_x), int(($y * $display_y)/$norm_y));

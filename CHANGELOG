@@ -1,5 +1,10 @@
 CHANGELOG
 ----------
+v2025.11.30
+* introduced some precomputations and caching for commonly used operations (distance, path-loss, airtime)
+* redesign of the gateway unavailability mechanism
+* 5-10% speed-up for long simulations and simulations with much traffic
+
 v2025.08.13
 * added statistics about the duty cycle of each gateway per band/channel (useful with confirmed traffic)
 * downlink statistics of gateways are shown even with unconfirmed traffic (minor traffic due to ADR tx commands)
