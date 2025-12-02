@@ -970,7 +970,7 @@ sub node_col{ # handle node collisions
 			push (@gw_rc, [$gw, $prx]);
 			# set the gw unavailable (exclude preamble's first 3 symbols) and lock to the specific transmission
 			my $Tsym = (2**$sel_sf)/$bw125;
-			my $Tpream = (3 + 4.25)*$Tsym;
+			my $Tpream = ($preamble-3 + 4.25)*$Tsym;
 # 			push(@{$gunavailability{$gw}}, [$sel_sta+$Tpream, $sel_end, $sel_ch, $sel_sf, "u"]);
 			$gunavailability_u{$gw}{$sel_ch} = [$sel_sta+$Tpream, $sel_end, $sel_sf];
 		}
