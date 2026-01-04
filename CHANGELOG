@@ -1,5 +1,8 @@
 CHANGELOG
 ----------
+v2026.1.4
+* just minor bug fixes
+
 v2025.11.30
 * introduced some precomputations and caching for commonly used operations (distance, path-loss, airtime)
 * redesign of the gateway unavailability mechanism

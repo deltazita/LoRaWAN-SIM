@@ -2,10 +2,10 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                  v2025.11.30                                    #
+#                                   v2026.1.4                                     #
 #                                                                                 #
 # Features:                                                                       #
-# -- EU868 or US915 spectrum
+# -- EU868 or US915 spectrum                                                      #
 # -- Multiple half-duplex gateways                                                #
 # -- 1% radio duty cycle per band for the nodes                                   #
 # -- 1 or 10% radio duty cycle for the gateways                                   #
@@ -435,7 +435,8 @@ while (1){
 		# check if the transmission can reach the node
 		my $G = random_normal(1, 0, 1);
 		my $d = $dist_ng{$dest}{$sel};
-		my $prx = $pl_ng{$dest}{$sel} + $G*$var;
+		my $Xs  = $G * $var;
+		my $prx = $Ptx_gw - $pl_ng{$dest}{$sel} - $Xs;
 		my $cb = $bw125;
 		$cb = $bw500 if ($fplan eq "US915");
 		if ($prx < $sensis[$sel_sf-7][bwconv($cb)]){
@@ -472,8 +473,6 @@ while (1){
 				$d_ = distance($ncoords{$dest}[0], $ncoords{$n}[0], $ncoords{$dest}[1], $ncoords{$n}[1]);
 				$prx_ = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d_/$dref)) - $G_*$var;
 			}else{
-				$d = $dist_ng{$dest}{$n};
-				$d_ = 0.2 if ($d_ == 0);
 				$prx_ = $Ptx_gw - $pl_ng{$dest}{$n} - $G_*$var;
 			}
 			if ($overlap == 3){
@@ -1025,7 +1024,6 @@ sub min_sf{
 	}else{
 		$npkt{$n} = $packet_size;
 	}
-	$npkt{$n} += (16 - $npkt{$n}%16) if ($npkt{$n}%16 != 0); # make the packet size multiple of 16
 	$npkt{$n} = $fpl[$sf-7] if ($npkt{$n} > $fpl[$sf-7]);
 	$npkt{$n} += $overhead_u;
 	print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
