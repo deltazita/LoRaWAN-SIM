@@ -23,7 +23,7 @@ my $gws = $ARGV[2];
 ### check max range ###
 my $dref = 40;
 my $Ptx = 14;
-my $Prx = -137; # sensitivity for SF12BW125
+my $Prx = -141; # sensitivity for SF12BW125, SX1302/3
 my $Lpld0 = 110;
 my $Xs = 0;
 my $margin = 5;

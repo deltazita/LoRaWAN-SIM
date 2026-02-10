@@ -70,7 +70,8 @@ my %gdublicate = (); # exists if it's a double gw
 my %gtime = (); # gateway downlink time per band or channel
 
 # LoRa PHY and LoRaWAN parameters
-my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW
+my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW (SX1262)
+my @gw_sensis = ([7,-127,-122,-116], [8,-129,-125,-119], [9,-132.5,-128,-122], [10,-135.5,-130,-125], [11,-138,-132,-128], [12,-141,-135,-129]); # SX1302/3 for BW125
 my @thresholds = ([1,-8,-9,-9,-9,-9], [-11,1,-11,-12,-13,-13], [-15,-13,1,-13,-14,-15], [-19,-18,-17,1,-17,-18], [-22,-22,-21,-20,1,-20], [-25,-25,-25,-24,-23,1]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
 my @snrs = (-7.5, -10, -12.5, -15, -17.5, -20);
 my $margin = 5;
@@ -79,7 +80,7 @@ my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
 my $noise = -90; # noise level for snr calculation
 my $bw125 = 125000; # channel bandwidth
 my $cr = 1; # Coding Rate
-my $volt = 3.3; # avg voltage
+my $volt = 3.5; # avg voltage
 my $Ptx_gw = 25; # gateway tx power (dBm)
 my @Ptx_l = (2, 5, 8, 11, 14, 17, 20); # dBm
 my @Ptx_w = (12*$volt, 20*$volt, 32*$volt, 51*$volt, 76*$volt, 90*$volt, 105*$volt); # Ptx cons. for 2, 5, 8, 11, 14, 17, and 20dBm (mA * V = mW)
@@ -830,7 +831,7 @@ sub node_col{ # handle node collisions
 		my $d = $dist_ng{$sel}{$gw};
 		my $G = random_normal(1, 0, 1);
 		my $prx = $Ptx_l[$nptx{$sel}] - $pl_ng{$sel}{$gw} - $G*$var;
-		if ($prx < $sensis[$sel_sf-7][bwconv($bw125)]){
+		if ($prx < $gw_sensis[$sel_sf-7][bwconv($bw125)]){
 			$surpressed{$sel}{$gw}{$sel_seq} = 1;
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
 			next;
@@ -991,7 +992,7 @@ sub min_sf{
 		my $gf = 13;
 		my $d0 = $dist_ng{$n}{$gw};
 		for (my $f=7; $f<=$max_sf; $f+=1){
-			my $S = $sensis[$f-7][$bwi];
+			my $S = $gw_sensis[$f-7][$bwi];
 			my $Prx = $Ptx_l[$nptx{$n}] - $pl_ng{$n}{$gw} - $Xs;
 			if (($Prx - $margin) > $S){
 				$gf = $f;
@@ -1004,7 +1005,7 @@ sub min_sf{
 	# check which gateways can be reached with rx2sf
 	foreach my $gw (@gw_ids){
 		my $d0 = $dist_ng{$n}{$gw};
-		my $S = $sensis[$rx2sf-7][$bwi];
+		my $S = $gw_sensis[$rx2sf-7][$bwi];
 		my $Prx = $Ptx_l[$nptx{$n}] - $pl_ng{$n}{$gw} - $Xs;
 		if (($Prx - $margin) > $S){
 			push(@{$nreachablegws{$n}}, [$gw, $Prx]);
