@@ -1,0 +1,5 @@
+joblib
+pandas
+tabulate
+scikit-learn==1.6.1
+xgboost==3.2.0

@@ -1,5 +1,9 @@
 CHANGELOG
 ----------
+v2026.5.13
+* added a ML-based recommendation system (see launch.py and README)
+* changed the main Perl script to support JSON-format input files
+
 v2026.2.10
 * added gateway receiver sensitivities based on SX1302/3
 * default average voltage changed to 3.5V (considering max=4.1, min=2.9)

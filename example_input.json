@@ -1,0 +1,14 @@
+{
+  "packets_per_hour": 12,
+  "simulation_time": 5,
+  "nodes": 2000,
+  "gateways": 2,
+  "terrain_side": 3000,
+  "number_of_bands": 2,
+  "rx2sf": 12,
+  "with_ack": 0,
+  "max_retr": 1,
+  "pkt_size": 16,
+  "adr": 1,
+  "double_gws": 0
+}

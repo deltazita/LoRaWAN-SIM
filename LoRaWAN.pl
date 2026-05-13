@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                   v2026.1.4                                     #
+#                                   v2026.5.13                                    #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum                                                      #
@@ -33,11 +33,193 @@ use Time::HiRes qw(time);
 use Math::Random qw(random_uniform random_exponential random_normal);
 use GD::SVG;
 use Statistics::Basic qw(:all);
+use JSON::PP qw(decode_json);
+use File::Basename qw(dirname);
+use File::Path qw(make_path);
+use File::Spec;
+use Cwd qw(abs_path);
 
-die "usage: $0 <packets_per_hour> <simulation_time_(hours)> <terrain_file!>\n" unless (scalar @ARGV == 3);
+my @CONFIG_KEYS = (
+	"packets_per_hour",
+	"simulation_time",
+	"nodes",
+	"gateways",
+	"terrain_side",
+	"number_of_bands",
+	"rx2sf",
+	"with_ack",
+	"max_retr",
+	"pkt_size",
+	"adr",
+	"double_gws",
+);
 
-die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($ARGV[0] < 1);
-die "Simulation time must be longer than or equal to 1h\n" if ($ARGV[1] < 1);
+my %CONFIG_ALIASES = (
+	"packet_rate" => "packets_per_hour",
+	"sim_time" => "simulation_time",
+	"simulation_time_hours" => "simulation_time",
+	"num_nodes" => "nodes",
+	"num_gateways" => "gateways",
+	"terrain" => "terrain_side",
+	"terrain_size" => "terrain_side",
+	"bands" => "number_of_bands",
+	"num_bands" => "number_of_bands",
+	"confirmed" => "with_ack",
+	"ack" => "with_ack",
+	"max_retries" => "max_retr",
+	"packet_size" => "pkt_size",
+	"payload_size" => "pkt_size",
+	"adr_on" => "adr",
+);
+
+sub usage {
+	return "usage: $0 <packets_per_hour> <simulation_time_(hours)> <terrain_file!>\n" .
+		   "   or: $0 --json <config.json>\n" .
+		   "   or: $0 <config.json>\n" .
+		   "   or: $0 <packets_per_hour> <simulation_time> <nodes> <gateways> <terrain_side> <number_of_bands> <rx2sf> <with_ack> <max_retr> <pkt_size> <adr> <double_gws>\n";
+}
+
+sub canonicalize_config {
+	my ($cfg_ref) = @_;
+	foreach my $alias (keys %CONFIG_ALIASES) {
+		my $canonical = $CONFIG_ALIASES{$alias};
+		if (exists $cfg_ref->{$alias} && !exists $cfg_ref->{$canonical}) {
+			$cfg_ref->{$canonical} = $cfg_ref->{$alias};
+		}
+	}
+}
+
+sub read_json_config {
+	my ($json_file) = @_;
+	open(my $fh, "<", $json_file) or die "Error: could not open JSON config file $json_file\n";
+	local $/;
+	my $json_text = <$fh>;
+	close($fh);
+
+	my $cfg = eval { decode_json($json_text) };
+	die "Error: could not parse JSON config file $json_file: $@\n" if ($@);
+	die "Error: JSON config file must contain one object at the top level\n" unless (ref($cfg) eq "HASH");
+
+	$cfg->{__config_dir} = dirname(abs_path($json_file));
+	canonicalize_config($cfg);
+	return %{$cfg};
+}
+
+sub parse_simulator_config {
+	my @args = @_;
+	die usage() if (scalar @args == 0);
+
+	if ((scalar @args == 2) && (($args[0] eq "--json") || ($args[0] eq "--config"))) {
+		return read_json_config($args[1]);
+	}
+	if ((scalar @args == 1) && ($args[0] =~ /\.json$/i)) {
+		return read_json_config($args[0]);
+	}
+	if (scalar @args == 3) {
+		return (
+			"packets_per_hour" => $args[0],
+			"simulation_time" => $args[1],
+			"terrain_file" => $args[2],
+		);
+	}
+	if (scalar @args == scalar @CONFIG_KEYS) {
+		my %cfg = ();
+		for (my $i = 0; $i < scalar @CONFIG_KEYS; $i += 1) {
+			$cfg{$CONFIG_KEYS[$i]} = $args[$i];
+		}
+		return %cfg;
+	}
+
+	die usage();
+}
+
+sub config_value {
+	my ($cfg_ref, $key, $default) = @_;
+	return exists $cfg_ref->{$key} ? $cfg_ref->{$key} : $default;
+}
+
+sub require_config_value {
+	my ($cfg_ref, $key) = @_;
+	die "Error: missing required configuration key '$key'\n" unless (exists $cfg_ref->{$key});
+	return $cfg_ref->{$key};
+}
+
+sub as_int {
+	my ($value, $key) = @_;
+	die "Error: missing value for '$key'\n" unless defined $value;
+	die "Error: '$key' must be an integer, got '$value'\n" unless ($value =~ /^-?\d+$/);
+	return int($value);
+}
+
+sub resolve_path {
+	my ($path, $base_dir) = @_;
+	return $path if File::Spec->file_name_is_absolute($path);
+	return File::Spec->catfile($base_dir, $path) if defined $base_dir;
+	return File::Spec->catfile(Cwd::getcwd(), $path);
+}
+
+sub script_dir {
+	return dirname(abs_path($0));
+}
+
+sub generate_terrain_from_config {
+	my ($cfg_ref) = @_;
+	my $side = as_int(require_config_value($cfg_ref, "terrain_side"), "terrain_side");
+	my $nodes = as_int(require_config_value($cfg_ref, "nodes"), "nodes");
+	my $gateways = as_int(require_config_value($cfg_ref, "gateways"), "gateways");
+
+	die "Terrain side must be higher than 0\n" if ($side <= 0);
+	die "Number of nodes must be higher than 0\n" if ($nodes <= 0);
+	die "Number of gateways must be higher than 0\n" if ($gateways <= 0);
+
+	my $dir = script_dir();
+	my $generator = File::Spec->catfile($dir, "generate_terrain.pl");
+	die "Error: missing companion script generate_terrain.pl next to $0\n" unless (-e $generator);
+
+	my $tmp_dir = File::Spec->catdir($dir, "tmp");
+	make_path($tmp_dir) unless (-d $tmp_dir);
+	my $terrain_file = File::Spec->catfile($tmp_dir, "terrain_${side}_${nodes}_${gateways}_$$.txt");
+
+	open(my $gen_fh, "-|", "perl", $generator, $side, $nodes, $gateways)
+		or die "Error: could not execute $generator\n";
+	open(my $out_fh, ">", $terrain_file)
+		or die "Error: could not create generated terrain file $terrain_file\n";
+	while (my $line = <$gen_fh>) {
+		print $out_fh $line;
+	}
+	close($out_fh);
+	close($gen_fh) or die "Error: generate_terrain.pl failed while creating $terrain_file\n";
+
+	return $terrain_file;
+}
+
+my %CONFIG = parse_simulator_config(@ARGV);
+canonicalize_config(\%CONFIG);
+
+my $packets_per_hour = as_int(require_config_value(\%CONFIG, "packets_per_hour"), "packets_per_hour");
+my $simulation_time_h = as_int(require_config_value(\%CONFIG, "simulation_time"), "simulation_time");
+my $number_of_bands = as_int(config_value(\%CONFIG, "number_of_bands", 2), "number_of_bands");
+my $configured_rx2sf = as_int(config_value(\%CONFIG, "rx2sf", 9), "rx2sf");
+my $configured_with_ack = as_int(config_value(\%CONFIG, "with_ack", 0), "with_ack");
+my $configured_max_retr = as_int(config_value(\%CONFIG, "max_retr", 1), "max_retr");
+my $configured_pkt_size = as_int(config_value(\%CONFIG, "pkt_size", 16), "pkt_size");
+my $configured_adr = as_int(config_value(\%CONFIG, "adr", 1), "adr");
+my $configured_double_gws = as_int(config_value(\%CONFIG, "double_gws", 0), "double_gws");
+my $terrain_file = exists $CONFIG{"terrain_file"}
+	? resolve_path($CONFIG{"terrain_file"}, $CONFIG{"__config_dir"})
+	: generate_terrain_from_config(\%CONFIG);
+
+$number_of_bands = 1 if ($number_of_bands < 1);
+$number_of_bands = 2 if ($number_of_bands > 2);
+
+die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($packets_per_hour < 1);
+die "Simulation time must be longer than or equal to 1h\n" if ($simulation_time_h < 1);
+die "RX2 SF must be between 7 and 12\n" if (($configured_rx2sf < 7) || ($configured_rx2sf > 12));
+die "with_ack must be 0 or 1\n" if (($configured_with_ack != 0) && ($configured_with_ack != 1));
+die "max_retr must be higher than or equal to 0\n" if ($configured_max_retr < 0);
+die "pkt_size must be higher than 0\n" if ($configured_pkt_size < 1);
+die "adr must be 0 or 1\n" if (($configured_adr != 0) && ($configured_adr != 1));
+die "double_gws must be 0 or 1\n" if (($configured_double_gws != 0) && ($configured_double_gws != 1));
 
 # node attributes
 my %ncoords = (); # node coordinates
@@ -91,7 +273,7 @@ my $fplan = "EU868"; # EU868 (default) or US915
 my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels
 my @bands = ("48", "47");
 my %band = (868100000=>"48", 868300000=>"48", 868500000=>"48", 867100000=>"47", 867300000=>"47", 867500000=>"47", 867700000=>"47", 867900000=>"47"); # band name per channel (all of them with 1% duty cycle)
-my $rx2sf = 9; # SF used for RX2 (LoRaWAN default = SF12, TTN uses SF9)
+my $rx2sf = $configured_rx2sf; # SF used for RX2 (LoRaWAN default = SF12, TTN uses SF9)
 my $rx2ch = 869525000; # channel used for RX2 (LoRaWAN default = 869.525MHz, TTN uses the same)
 my $dutycycle = 99; # airtime multiplier for low duty cycle uplink transmissions (99 = 1% duty cycle, 9 = 10%)
 # ------ US915 ------- #
@@ -99,8 +281,11 @@ my %uplink_ch_index = ();
 if ($fplan eq "US915"){
 	@channels = (903900000, 904100000, 904300000, 904500000, 904700000, 904900000, 905100000, 905300000);
 	%uplink_ch_index = (903900000=>0, 904100000=>1, 904300000=>2, 904500000=>3, 904700000=>4, 904900000=>5, 905100000=>6, 905300000=>7); # key=uplink channel, value=index of uplink channel in @channels
-	$rx2sf = 12; # SF used for RX2 (500kHz)
 	$rx2ch = 923300000; # channel used for RX2
+}
+if (($fplan eq "EU868") && ($number_of_bands == 1)){
+	@channels = grep { $band{$_} eq "48" } @channels;
+	@bands = ("48");
 }
 my $bw500 = 500000;
 my @channels_d = (923300000, 923900000, 924500000, 925100000, 925700000, 926300000, 926900000, 927500000); # 8x500kHz RX1 downlink channels (all SFs)
@@ -124,11 +309,11 @@ my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhe
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
-my $confirmed_perc = 0; # percentage of nodes that require confirmed transmissions (1=all)
+my $confirmed_perc = $configured_with_ack; # percentage of nodes that require confirmed transmissions (1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
-my $max_retr = 1; # max number of retransmissions per packet (default value = 1)
-my $period = 3600/$ARGV[0]; # time period between transmissions
-my $sim_time = $ARGV[1]*3600; # given simulation time
+my $max_retr = $configured_max_retr; # max number of retransmissions per packet (default value = 1)
+my $period = 3600/$packets_per_hour; # time period between transmissions
+my $sim_time = $simulation_time_h*3600; # given simulation time
 my $debug = 0; # enable debug mode
 my $sim_end = 0;
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side, normalised terrain side
@@ -145,15 +330,15 @@ my $total_down_time = 0; # total downlink time
 my $avg_sf = 0;
 my @sf_distr = (0, 0, 0, 0, 0, 0);
 my $fixed_packet_size = 1; # all nodes have the same packet size defined in @fpl (=1) or a randomly selected (=0)
-my $packet_size = 16; # default packet size if fixed_packet_size=1 or avg packet size if fixed_packet_size=0 (Bytes)
+my $packet_size = $configured_pkt_size; # default packet size if fixed_packet_size=1 or avg packet size if fixed_packet_size=0 (Bytes)
 my $packet_size_distr = "normal"; # uniform / normal (applicable if fixed_packet_size=0)
 my $avg_pkt = 0; # actual average packet size
 my %sorted_t = (); # keys = channels, values = list of nodes
 my @recents = (); # used in auto_simtime
 my $auto_simtime = 0; # 1 = the simulation will automatically stop (useful when sim_time>>10000)
 my %sf_retrans = (); # number of retransmissions per SF
-my $adr_on = 1; # ADR is used or not (=0)
-my $double_gws = 0; # enable 8x2 channel gateways
+my $adr_on = $configured_adr; # ADR is used or not (=0)
+my $double_gws = $configured_double_gws; # enable 8x2 channel gateways
 
 # application server
 my $policy = 1; # gateway selection policy for downlink traffic
@@ -1066,7 +1251,6 @@ sub bwconv{
 }
 
 sub read_data{
-	my $terrain_file = $ARGV[-1];
 	open(FH, "<$terrain_file") or die "Error: could not open terrain file $terrain_file\n";
 	my @nodes = ();
 	my @gateways = ();
@@ -1210,7 +1394,7 @@ sub generate_picture{
 		$im->rectangle($x-5, $y-5, $x+5, $y+5, $red);
 		$im->string(gdGiantFont,$x-2,$y-20,$g,$blue);
 	}
-	my $output_file = $ARGV[-1]."-img.svg";
+	my $output_file = $terrain_file."-img.svg";
 	open(FILEOUT, ">$output_file") or die "could not open file $output_file for writing!";
 	binmode FILEOUT;
 	print FILEOUT $im->svg;
