@@ -357,6 +357,16 @@ def model_row_from_config(config: Dict[str, Any], features: Sequence[str]) -> pd
 
     return pd.DataFrame([row_data])[list(features)].astype(float)
 
+def metric_to_class(v: float) -> int:
+    if v > 0.95:
+        return 3
+    elif v > 0.85:
+        return 2
+    elif v > 0.60:
+        return 1
+    else:
+        return 0
+
 
 def predict_classifier_details(config: Dict[str, Any], target: str, classifier_model_path: Optional[str] = None) -> Dict[str, Any]:
     """Predict PRR/PDR class details from the classifier."""
@@ -683,8 +693,15 @@ def run_recommendation(
                 }
             )
     else:
-        current_details = predict_classifier_details(cfg, target, classifier_model)
-        current_class = int(current_details["class_idx"])
+        # current_details = predict_classifier_details(cfg, target, classifier_model)
+        # current_class = int(current_details["class_idx"])
+        if target == "prr":
+            current_class = metric_to_class(float(baseline["prr"]))
+        elif target == "pdr":
+            current_class = metric_to_class(float(baseline["pdr"]))
+        else:
+            current_details = predict_classifier_details(cfg, target, classifier_model)
+            current_class = int(current_details["class_idx"])
         labels = CLASS_LABELS[target]
         max_class = len(labels) - 1
         print(f"Current class       : {label_for_class(labels, current_class)} (class {current_class})")
