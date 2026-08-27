@@ -2,13 +2,13 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                   v2026.5.13                                    #
+#                                   v2026.8.27                                    #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum                                                      #
 # -- Multiple half-duplex gateways                                                #
-# -- 1% radio duty cycle per band for the nodes                                   #
-# -- 1 or 10% radio duty cycle for the gateways                                   #
+# -- 1% radio duty cycle per band for the nodes (EU868)                           #
+# -- 1 or 10% radio duty cycle for the gateways (EU868)                           #
 # -- Acks with two receive windows (RX1, RX2)                                     #
 # -- Non-orthogonal SF transmissions                                              #
 # -- Periodic or non-periodic (exponential) transmission rate                     #
@@ -18,7 +18,7 @@
 # -- Multiple channels                                                            #
 # -- Collision handling for both uplink and downlink transmissions                #
 # -- Energy consumption calculation (uplink+downlink)                             #
-# -- ADR support                                                                  #
+# -- ADR support (TX power + NbTrans for unconfirmed uplinks)                     #
 # -- Network server policies (downlink packet & gw selection)                     #
 #                                                                                 #
 # author: Dr. Dimitrios Zorbas                                                    #
@@ -70,13 +70,14 @@ my %CONFIG_ALIASES = (
 	"packet_size" => "pkt_size",
 	"payload_size" => "pkt_size",
 	"adr_on" => "adr",
+	"nb_trans" => "nbtrans",
 );
 
 sub usage {
 	return "usage: $0 <packets_per_hour> <simulation_time_(hours)> <terrain_file!>\n" .
 		   "   or: $0 --json <config.json>\n" .
 		   "   or: $0 <config.json>\n" .
-		   "   or: $0 <packets_per_hour> <simulation_time> <nodes> <gateways> <terrain_side> <number_of_bands> <rx2sf> <with_ack> <max_retr> <pkt_size> <adr> <double_gws>\n";
+		   "   or: $0 <packets_per_hour> <simulation_time> <nodes> <gateways> <terrain_side> <number_of_bands> <rx2sf> <with_ack> <max_retr> <pkt_size> <adr> <double_gws> [nbtrans]\n";
 }
 
 sub canonicalize_config {
@@ -122,11 +123,13 @@ sub parse_simulator_config {
 			"terrain_file" => $args[2],
 		);
 	}
-	if (scalar @args == scalar @CONFIG_KEYS) {
+	if ((scalar @args == scalar @CONFIG_KEYS) || (scalar @args == scalar @CONFIG_KEYS + 1)) {
 		my %cfg = ();
 		for (my $i = 0; $i < scalar @CONFIG_KEYS; $i += 1) {
 			$cfg{$CONFIG_KEYS[$i]} = $args[$i];
 		}
+		# Optional 13th positional parameter, kept optional for backward compatibility.
+		$cfg{"nbtrans"} = $args[-1] if (scalar @args == scalar @CONFIG_KEYS + 1);
 		return %cfg;
 	}
 
@@ -149,6 +152,14 @@ sub as_int {
 	die "Error: missing value for '$key'\n" unless defined $value;
 	die "Error: '$key' must be an integer, got '$value'\n" unless ($value =~ /^-?\d+$/);
 	return int($value);
+}
+
+sub as_number {
+	my ($value, $key) = @_;
+	die "Error: missing value for '$key'\n" unless defined $value;
+	die "Error: '$key' must be numeric, got '$value'\n"
+		unless ($value =~ /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/);
+	return 0 + $value;
 }
 
 sub resolve_path {
@@ -200,11 +211,12 @@ my $packets_per_hour = as_int(require_config_value(\%CONFIG, "packets_per_hour")
 my $simulation_time_h = as_int(require_config_value(\%CONFIG, "simulation_time"), "simulation_time");
 my $number_of_bands = as_int(config_value(\%CONFIG, "number_of_bands", 2), "number_of_bands");
 my $configured_rx2sf = as_int(config_value(\%CONFIG, "rx2sf", 9), "rx2sf");
-my $configured_with_ack = as_int(config_value(\%CONFIG, "with_ack", 0), "with_ack");
+my $configured_with_ack = as_number(config_value(\%CONFIG, "with_ack", 0), "with_ack");
 my $configured_max_retr = as_int(config_value(\%CONFIG, "max_retr", 1), "max_retr");
 my $configured_pkt_size = as_int(config_value(\%CONFIG, "pkt_size", 16), "pkt_size");
 my $configured_adr = as_int(config_value(\%CONFIG, "adr", 1), "adr");
 my $configured_double_gws = as_int(config_value(\%CONFIG, "double_gws", 0), "double_gws");
+my $configured_nbtrans = as_int(config_value(\%CONFIG, "nbtrans", 1), "nbtrans"); # maximum NbTrans allowed by the adaptive policy (1 = no repetitions)
 my $terrain_file = exists $CONFIG{"terrain_file"}
 	? resolve_path($CONFIG{"terrain_file"}, $CONFIG{"__config_dir"})
 	: generate_terrain_from_config(\%CONFIG);
@@ -215,11 +227,12 @@ $number_of_bands = 2 if ($number_of_bands > 2);
 die "Packet rate must be higher than or equal to 1pkt per hour\n" if ($packets_per_hour < 1);
 die "Simulation time must be longer than or equal to 1h\n" if ($simulation_time_h < 1);
 die "RX2 SF must be between 7 and 12\n" if (($configured_rx2sf < 7) || ($configured_rx2sf > 12));
-die "with_ack must be 0 or 1\n" if (($configured_with_ack != 0) && ($configured_with_ack != 1));
+die "with_ack must be between 0 and 1\n" if (($configured_with_ack < 0) || ($configured_with_ack > 1));
 die "max_retr must be higher than or equal to 0\n" if ($configured_max_retr < 0);
 die "pkt_size must be higher than 0\n" if ($configured_pkt_size < 1);
 die "adr must be 0 or 1\n" if (($configured_adr != 0) && ($configured_adr != 1));
 die "double_gws must be 0 or 1\n" if (($configured_double_gws != 0) && ($configured_double_gws != 1));
+die "nbtrans must be between 1 and 15\n" if (($configured_nbtrans < 1) || ($configured_nbtrans > 15));
 
 # node attributes
 my %ncoords = (); # node coordinates
@@ -228,7 +241,9 @@ my %nretransmissions = (); # retransmissions per node (per packet)
 my %surpressed = ();
 my %nreachablegws = (); # reachable gws
 my %nptx = (); # transmit power index
-my %nresponse = (); # 0/1 (1 = ADR response will be sent)
+my %nresponse = (); # 0/1 (1 = LinkADRAns will be sent in the next uplink)
+my %nnbtrans = (); # currently applied NbTrans per node
+my %nnbtrans_count = (); # current copy number for this FCntUp
 my %nconfirmed = (); # confirmed transmissions or not
 my %nunique = (); # unique transmissions per node (equivalent to FCntUp)
 my %nacked = (); # unique acked packets (for confirmed transmissions)
@@ -238,7 +253,8 @@ my %ndc = (); # indicates when a node can transmit again per band (according to 
 my %npkt = (); # packet size per node
 my %ntotretr = (); # number of retransmissions per node (total)
 my %nlast_ch = (); # last transmission time
-my %ndeliv_seq = (); # 1 = unique packet seq exists (for confirmed uplinks)
+my %ndeliv_seq = (); # 1 = this FCntUp has not yet been counted as delivered
+my %nuplink_success_history = (); # recent unique-uplink outcomes per ED: 1=delivered, 0=lost
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -247,7 +263,7 @@ my %gunavailability_d = (); # unavailable gw time due to downlinks
 my %gunavailability_u = (); # unavailable gw time due to uplinks
 my %gdc = (); # gw duty cycle (1% uplink channel is used for RX1, 10% downlink channel is used for RX2)
 my %gresponses = (); # acks carried out per gw
-my %gdest = (); # contains downlink information [node, sf, RX1/2, channel, power index]
+my %gdest = (); # [node, downlink start, uplink SF, RX1/2, channel, power index, NbTrans, uplink FCntUp]
 my %gdublicate = (); # exists if it's a double gw
 my %gtime = (); # gateway downlink time per band or channel
 
@@ -300,7 +316,8 @@ my $CRC = 1; # 0/1
 my $mhdr = 1; # MAC header (bytes)
 my $mic = 4; # MIC bytes
 my $fhdr = 7; # frame header without fopts
-my $adr = 4; # Fopts option for the ADR (4 Bytes)
+my $linkadr_req = 5; # LinkADRReq: CID (1 B) + payload (4 B)
+my $linkadr_ans = 2; # LinkADRAns: CID (1 B) + status (1 B)
 my $txdc = 1; # Fopts option for the TX duty cycle (1 Byte)
 my $fport_u = 1; # 1B for FPort for uplink
 my $fport_d = 0; # 0B for FPort for downlink (commands are included in Fopts, acks have no payload)
@@ -309,7 +326,7 @@ my $overhead_d = $mhdr+$mic+$fhdr+$fport_d+$hcrc; # LoRa+LoRaWAN downlink overhe
 my %overlaps = (); # handles special packet overlaps 
 
 # simulation parameters
-my $confirmed_perc = $configured_with_ack; # percentage of nodes that require confirmed transmissions (1=all)
+my $confirmed_perc = $configured_with_ack; # fraction of nodes that require confirmed transmissions (0=none, 1=all)
 my $full_collision = 1; # take into account non-orthogonal SF transmissions or not
 my $max_retr = $configured_max_retr; # max number of retransmissions per packet (default value = 1)
 my $period = 3600/$packets_per_hour; # time period between transmissions
@@ -321,7 +338,8 @@ my $start_time = time; # just for statistics
 my $dropped = 0; # number of dropped packets (for confirmed traffic)
 my $dropped_unc = 0; # number of dropped packets (for unconfirmed traffic)
 my $total_trans = 0; # number of transm. packets
-my $total_retrans = 0; # number of re-transm packets
+my $total_retrans = 0; # number of confirmed re-transmission packets
+my $total_nbtrans_repetitions = 0; # extra unconfirmed copies due to NbTrans
 my $no_rx1 = 0; # no gw was available in RX1
 my $no_rx2 = 0; # no gw was available in RX1 or RX2
 my $picture = 1; # generate an energy consumption or a PRR map (see line after stats)
@@ -340,6 +358,12 @@ my %sf_retrans = (); # number of retransmissions per SF
 my $adr_on = $configured_adr; # ADR is used or not (=0)
 my $double_gws = $configured_double_gws; # enable 8x2 channel gateways
 
+# NbTrans adaptation policy parameters 
+my $nbtrans_history_len = 20;
+my $nbtrans_min_samples = 10;
+my $nbtrans_good_threshold = 0.90;
+my $nbtrans_moderate_threshold = 0.70;
+
 # application server
 my $policy = 1; # gateway selection policy for downlink traffic
 die "# The least busy policy cannot be used with US915 frequencies" if (($policy == 3) && ($fplan eq "US915"));
@@ -349,8 +373,8 @@ my %nogwavail = (); # counts how many time no gw was available (keys = nodes)
 my %powers = (); # contains last 10 received powers per node
 
 # precomputations
-my %pl_ng;    # path-loss (without shadowing) per node-gw pair
-my %dist_ng;  # node-gw distance 
+my %pl_ng; # path-loss (without shadowing) per node-gw pair
+my %dist_ng; # node-gw distance 
 
 read_data(); # read terrain file
 
@@ -427,6 +451,20 @@ while (1){
 	
 	if ($sel =~ /^[0-9]/){ # if the packet is an uplink transmission
 		
+		# For unconfirmed traffic, a LinkADRReq may have arrived after this event was scheduled.
+		# Add LinkADRAns to the first subsequently transmitted uplink at execution time.
+		if (($nconfirmed{$sel} == 0) && ($nresponse{$sel} == 1)){
+			my $old_at = $sel_end - $sel_sta;
+			my $new_at = airtime($sel_sf, $bw125, $npkt{$sel}+$linkadr_ans);
+			if ($new_at > $old_at){
+				$nconsumption{$sel} += ($new_at-$old_at) * ($Ptx_w[$nptx{$sel}] + $Pidle_w);
+				$sel_end = $sel_sta + $new_at;
+				$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$new_at if ($fplan ne "US915");
+			}
+			$nresponse{$sel} = 0;
+			print "# $sel includes LinkADRAns in FCntUp=$sel_seq\n" if ($debug == 1);
+		}
+
 		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq); # check collisions and return a list of gws that received the uplink pkt
 		my $rwindow = 0;
 		my $failed = 0;
@@ -440,10 +478,13 @@ while (1){
 		push (@{$powers{$sel}}, $max_snr) if ($max_snr > -999);
 		shift @{$powers{$sel}} if (scalar @{$powers{$sel}} > 10);
 		if ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 1)){ # if at least one gateway received the pkt -> successful transmission
-			my ($new_ptx, $new_index) = (undef, -1);
+			my ($new_ptx, $new_index, $new_nbtrans) = (undef, -1, -1);
 			if ((scalar @{$powers{$sel}} == 10) && ($adr_on == 1)){
-				($new_ptx, $new_index) = adr($sel, $sel_sf);
+				($new_ptx, $new_index, $new_nbtrans) = adr($sel, $sel_sf);
 			}
+			# Preserve the existing confirmed retransmission model; NbTrans is used for unconfirmed traffic.
+			$new_nbtrans = -1;
+			my $adr_cmd_bytes = ($new_index != -1) ? $linkadr_req : 0;
 			if (exists $ndeliv_seq{$sel}{$sel_seq}){
 				$ndeliv{$sel} += 1;
 				delete $ndeliv_seq{$sel}{$sel_seq};
@@ -452,15 +493,15 @@ while (1){
 			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
 			# now we have to find which gateway (if any) can transmit an ack in RX1 or RX2
 			# check RX1
-			my $sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1);
+			my $sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1, $adr_cmd_bytes);
 			if (defined $sel_gw){
-				schedule_downlink($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 1, $new_index);
+				schedule_downlink($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 1, $new_index, $new_nbtrans);
 			}else{
 				# check RX2
 				$no_rx1 += 1;
-				$sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 2);
+				$sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 2, $adr_cmd_bytes);
 				if (defined $sel_gw){
-					schedule_downlink($sel_gw, $sel, $sel_sf, $rx2ch, $sel_seq, $sel_end, 2, $new_index);
+					schedule_downlink($sel_gw, $sel, $sel_sf, $rx2ch, $sel_seq, $sel_end, 2, $new_index, $new_nbtrans);
 				}else{
 					$no_rx2 += 1;
 					print "# no gateway is available\n" if ($debug == 1);
@@ -468,66 +509,45 @@ while (1){
 					$failed = 1;
 				}
 			}
-		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful transmission but no ack is required
-			$ndeliv{$sel} += 1;
+		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful unconfirmed physical transmission
+			# Several NbTrans copies may carry the same FCntUp
+			# count delivery and update the NS success history only on the first successfully decoded copy
+			if (exists $ndeliv_seq{$sel}{$sel_seq}){
+				record_uplink_outcome($sel, 1);
+				$ndeliv{$sel} += 1;
+				delete $ndeliv_seq{$sel}{$sel_seq};
+			}
 			$appsuccess{$sel} += 1;
-			printf "# $sel 's transmission received by %d gateway(s) (channel $sel_ch)\n", scalar @$gw_rc if ($debug == 1);
-			### ADR for unconfirmed transmissions
+			printf "# $sel received by %d gateway(s) (channel $sel_ch, FCntUp=$sel_seq, NbTrans copy $nnbtrans_count{$sel}/$nnbtrans{$sel})\n", scalar @$gw_rc if ($debug == 1);
+
+			# LinkADRReq may update TX power and/or NbTrans. SF stays fixed by min_sf()
 			if ((scalar @{$powers{$sel}} == 10) && ($adr_on == 1)){
-				my ($new_ptx, $new_index) = adr($sel, $sel_sf);
-				if (defined $new_ptx){
-					my $sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1);
+				my ($new_ptx, $new_index, $new_nbtrans) = adr($sel, $sel_sf);
+				if (($new_index != -1) || ($new_nbtrans != -1)){
+					my $sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 1, $linkadr_req);
 					if (defined $sel_gw){
-						schedule_downlink($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 1, $new_index);
+						schedule_downlink($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 1, $new_index, $new_nbtrans);
 					}else{
-						$sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 2);
+						$sel_gw = gs_policy($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, 2, $linkadr_req);
 						if (defined $sel_gw){
-							schedule_downlink($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, 2, $new_index);
+							schedule_downlink($sel_gw, $sel, $sel_sf, $rx2ch, $sel_seq, $sel_end, 2, $new_index, $new_nbtrans);
 						}else{
-							print "# no downlink commands could be sent to $sel\n" if ($debug == 1);
+							print "# no LinkADRReq could be sent to $sel\n" if ($debug == 1);
 						}
 					}
 				}
 			}
-			###
-			$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw125)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw125 * ($Prx_w + $Pidle_w);
-			$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw125 * ($Prx_w + $Pidle_w);
-			
-			my $new_ch = $channels[rand @channels];
-			$new_ch = $channels[rand @channels] while ($new_ch == $sel_ch);
-			$sel_ch = $new_ch;
-			my $at = airtime($sel_sf, $bw125, $npkt{$sel});
-			$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
-			if ($fplan ne "US915"){
-				if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
-					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
-					$sel_sta = $ndc{$sel}{$band{$sel_ch}};
-				}
-			}
-			$sel_end = $sel_sta + $at;
-			# place the new transmission at the correct position
-			my $i = 0;
-			foreach my $el (@{$sorted_t{$sel_ch}}){
-				my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
-				last if ($sta > $sel_sta);
-				$i += 1;
-			}
-			$nunique{$sel} += 1 if ($sel_sta < $sim_time); # do not count transmissions that exceed the simulation time;
-			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
-			$total_trans += 1 if ($sel_sta < $sim_time);
-			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
-			$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
 		}else{ # non-successful transmission
 			$failed = 1;
 		}
-		if ($failed == 1){
-			my $at = 0;
-			my $new_trans = 0;
-			my $new_ch = $channels[rand @channels];
-			$new_ch = $channels[rand @channels] while ($new_ch == $sel_ch);
-			$sel_ch = $new_ch;
-			if ($nconfirmed{$sel} == 1){
+		if ($nconfirmed{$sel} == 1){
+			# Existing confirmed-uplink retransmission mechanism, kept separate from NbTrans.
+			if ($failed == 1){
+				my $at = 0;
+				my $new_trans = 0;
+				my $new_ch = $channels[rand @channels];
+				$new_ch = $channels[rand @channels] while (($new_ch == $sel_ch) && (scalar @channels > 1));
+				$sel_ch = $new_ch;
 				if ($nretransmissions{$sel} < $max_retr){
 					$nretransmissions{$sel} += 1;
 					$sf_retrans{$sel_sf} += 1;
@@ -538,49 +558,95 @@ while (1){
 					$new_trans = 1;
 					print "# $sel 's packet lost!\n" if ($debug == 1);
 				}
-				# the node stays on only for the duration of the preamble for both receive windows + in idle mode between RX windows
 				$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw125)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw125 * ($Prx_w + $Pidle_w);
 				$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw125 * ($Prx_w + $Pidle_w);
-				# plan the next transmission as soon as the duty cycle permits that
 				$at = airtime($sel_sf, $bw125, $npkt{$sel});
 				if ($new_trans == 0){
 					$sel_sta = $sel_end + 2 + 1 + rand(2);
 				}else{
 					$sel_sta = $sel_end + 2 + $nperiod{$sel} + rand(1);
 				}
-			}else{
-				$dropped_unc += 1;
-				$new_trans = 1;
-				print "# $sel 's packet lost!\n" if ($debug == 1);
-				$at = airtime($sel_sf, $bw125, $npkt{$sel});
-				$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
+				if ($fplan ne "US915"){
+					if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
+						print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
+						$sel_sta = $ndc{$sel}{$band{$sel_ch}};
+					}
+				}
+				$sel_end = $sel_sta+$at;
+				my $i = 0;
+				foreach my $el (@{$sorted_t{$sel_ch}}){
+					my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
+					last if ($sta > $sel_sta);
+					$i += 1;
+				}
+				if (($new_trans == 1) && ($sel_sta < $sim_time)){
+					$nunique{$sel} += 1;
+					$total_retrans += 1;
+					$ndeliv_seq{$sel}{$nunique{$sel}} = 1;
+				}
+				$total_trans += 1 if ($sel_sta < $sim_time);
+				splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
+				print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
+				$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
+				$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
 			}
+		}else{
+			# An unconfirmed uplink always opens RX1/RX2, even if no gateway decoded it
+			$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw125)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw125 * ($Prx_w + $Pidle_w);
+			$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw125 * ($Prx_w + $Pidle_w);
+
+			my $repeat_same_fcnt = ($nnbtrans_count{$sel} < $nnbtrans{$sel}) ? 1 : 0;
+			if (($repeat_same_fcnt == 0) && (exists $ndeliv_seq{$sel}{$sel_seq})){
+				# No copy of this FCntUp reached any GW: one unique-uplink failure
+				record_uplink_outcome($sel, 0);
+				$dropped_unc += 1;
+				delete $ndeliv_seq{$sel}{$sel_seq};
+				print "# $sel 's unconfirmed packet FCntUp=$sel_seq lost after $nnbtrans{$sel} transmission(s)!\n" if ($debug == 1);
+			}
+
+			my $new_ch = $channels[rand @channels];
+			$new_ch = $channels[rand @channels] while (($new_ch == $sel_ch) && (scalar @channels > 1));
+			$sel_ch = $new_ch;
+			my $next_seq = $sel_seq;
+			if ($repeat_same_fcnt == 1){
+				$nnbtrans_count{$sel} += 1;
+				$total_nbtrans_repetitions += 1;
+				$sel_sta = $sel_end + 2 + 1 + rand(2); # after RX2 + random delay
+			}else{
+				$nnbtrans_count{$sel} = 1;
+				$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
+				if ($sel_sta < $sim_time){
+					$nunique{$sel} += 1;
+					$next_seq = $nunique{$sel};
+					$ndeliv_seq{$sel}{$next_seq} = 1;
+				}
+			}
+
+			my $at = airtime($sel_sf, $bw125, $npkt{$sel});
 			if ($fplan ne "US915"){
 				if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
 					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
 					$sel_sta = $ndc{$sel}{$band{$sel_ch}};
 				}
 			}
-			$sel_end = $sel_sta+$at;
-			# place the new transmission at the correct position
+			$sel_end = $sel_sta + $at;
 			my $i = 0;
 			foreach my $el (@{$sorted_t{$sel_ch}}){
 				my ($n, $sta, $end, $ch_, $sf_, $seq) = @$el;
 				last if ($sta > $sel_sta);
 				$i += 1;
 			}
-			if (($new_trans == 1) && ($sel_sta < $sim_time)){ # do not count transmissions that exceed the simulation time
-				$nunique{$sel} += 1;
-				if ($nconfirmed{$sel} == 1){
-					$total_retrans += 1;
-					$ndeliv_seq{$sel}{$nunique{$sel}} = 1;
-				}
+			if ($sel_sta < $sim_time){
+				my $scheduled_energy = $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
+				my $prev_dc = -1;
+				$prev_dc = $ndc{$sel}{$band{$sel_ch}} if ($fplan ne "US915");
+				# Extra tuple fields are accounting metadata used only if a pending NbTrans copy is cancelled.
+				splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $next_seq, $scheduled_energy, $prev_dc, $repeat_same_fcnt]);
+				$total_trans += 1;
+				$nconsumption{$sel} += $scheduled_energy;
+				$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
+				print "# $sel, " . ($repeat_same_fcnt ? "NbTrans copy $nnbtrans_count{$sel}/$nnbtrans{$sel} of FCntUp=$next_seq" : "new FCntUp=$next_seq") . " at $sel_sta -> $sel_end\n" if ($debug == 1);
 			}
-			$total_trans += 1 if ($sel_sta < $sim_time);
-			splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
-			print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-			$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
-			$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
 		}
 		foreach my $g (@gw_ids){
 			delete $surpressed{$sel}{$g}{$sel_seq};
@@ -608,11 +674,11 @@ while (1){
 		$index = 0;
 		# ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) information we already have
 		# sel_sf = SF of the downlink, sf = SF of the corresponding uplink in gdest
-		my ($dest, $st, $sf, $rwindow, $ch, $pow); # we also need dest, rwindow, and pow (the others should be the same)
+		my ($dest, $st, $sf, $rwindow, $ch, $pow, $nbtrans, $uplink_seq);
 		foreach my $tup (@{$gdest{$sel}}){
-			my ($dest_, $st_, $sf_, $rwindow_, $ch_, $p_) = @$tup;
+			my ($dest_, $st_, $sf_, $rwindow_, $ch_, $p_, $nb_, $seq_) = @$tup;
 			if (($st_ == $sel_sta) && ($ch_ == $sel_ch)){
-				($dest, $st, $sf, $rwindow, $ch, $pow) = ($dest_, $st_, $sf_, $rwindow_, $ch_, $p_);
+				($dest, $st, $sf, $rwindow, $ch, $pow, $nbtrans, $uplink_seq) = ($dest_, $st_, $sf_, $rwindow_, $ch_, $p_, $nb_, $seq_);
 				last;
 			}
 			$index += 1;
@@ -704,14 +770,28 @@ while (1){
 			if ($rwindow == 2){ # also count the RX1 window
 				$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$cb)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$cb * ($Prx_w + $Pidle_w);
 			}
-			my $extra_bytes = 0; # if an ADR request is included in the downlink packet
+			my $extra_bytes = 0;
+			my $has_linkadr_req = (($pow != -1) || ($nbtrans != -1)) ? 1 : 0;
+			if ($has_linkadr_req == 1){
+				$extra_bytes = $linkadr_req;
+				$nresponse{$dest} = 1;
+			}
 			if ($pow != -1){
 				$nptx{$dest} = $pow;
-				$extra_bytes = $adr;
-				$nresponse{$dest} = 1;
 				print "# transmit power of $dest is set to $Ptx_l[$pow]dBm\n" if ($debug == 1);
 			}
+			if ($nbtrans != -1){
+				$nnbtrans{$dest} = $nbtrans;
+				print "# NbTrans of $dest is set to $nbtrans\n" if ($debug == 1);
+			}
 			$nconsumption{$dest} += airtime($sel_sf, $cb, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
+			if ($nconfirmed{$dest} == 0){
+				# Any valid Class-A downlink stops remaining copies of the same FCntUp.
+				my $cancelled = remove_scheduled_uplink($dest, $uplink_seq);
+				if ($cancelled > 0){
+					schedule_unconfirmed_after_downlink($dest, $sf, $st-$rwindow, $sel_end);
+				}
+			}
 		}else{ # ack was not received
 			if ($nconfirmed{$dest} == 1){
 				if ($nretransmissions{$dest} < $max_retr){
@@ -738,7 +818,7 @@ while (1){
 			} while ($ch == $nlast_ch{$dest});
 			my $extra_bytes = 0;
 			if ($nresponse{$dest} == 1){
-				$extra_bytes = $adr;
+				$extra_bytes = $linkadr_ans;
 				$nresponse{$dest} = 0;
 			}
 			my $at = airtime($sf, $bw125, $npkt{$dest}+$extra_bytes);
@@ -781,7 +861,9 @@ printf "Avg node consumption = %.5f J\n", $avg_cons/1000;
 printf "Min node consumption = %.5f J\n", $min_cons/1000;
 printf "Max node consumption = %.5f J\n", $max_cons/1000;
 print "Total number of transmissions = $total_trans\n";
-print "Total number of re-transmissions = $total_retrans\n" if ($confirmed_perc > 0);
+print "Total number of confirmed re-transmissions = $total_retrans\n" if ($confirmed_perc > 0);
+print "Total NbTrans repetitions = $total_nbtrans_repetitions\n";
+printf "Avg applied NbTrans = %.3f\n", (sum values %nnbtrans)/(scalar keys %nnbtrans);
 printf "Total number of unique transmissions = %d\n", (sum values %nunique);
 printf "Stdv of unique transmissions = %.2f\n", stddev(values %nunique);
 printf "Total packets received = %d\n", (sum values %appsuccess); # total packets received
@@ -839,7 +921,7 @@ generate_picture(1) if ($picture == 1); # 0=energy consumption map, 1=PRR map
 
 
 sub schedule_downlink{
-	my ($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, $rwindow, $new_index) = @_;
+	my ($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, $rwindow, $new_index, $new_nbtrans) = @_;
 	my $bnd;
 	if ($fplan eq "US915"){
 		if ($rwindow == 1){
@@ -852,9 +934,12 @@ sub schedule_downlink{
 		$bnd = $band{$sel_ch} if ($rwindow == 1);
 	}
 	my $extra_bytes = 0;
-	if ($new_index != -1){
-		print "# it will be suggested that $sel changes tx power to $Ptx_l[$new_index]dBm\n" if ($debug == 1);
-		$extra_bytes = $adr;
+	if (($new_index != -1) || ($new_nbtrans != -1)){
+		$extra_bytes = $linkadr_req;
+		print "# LinkADRReq for $sel:" if ($debug == 1);
+		print " TXPower=$Ptx_l[$new_index]dBm" if (($debug == 1) && ($new_index != -1));
+		print " NbTrans=$new_nbtrans" if (($debug == 1) && ($new_nbtrans != -1));
+		print "\n" if ($debug == 1);
 	}
 	my $cb = $bw125;
 	$cb = $bw500 if ($fplan eq "US915");
@@ -884,11 +969,12 @@ sub schedule_downlink{
 	###
 	$appacked{$sel} += 1 if ($nconfirmed{$sel} == 1);
 	splice(@{$sorted_t{$sel_ch}}, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $sel_sf, $appacked{$sel}]);
-	push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, $new_index]);
+	push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, $new_index, $new_nbtrans, $sel_seq]);
 }
 
 sub gs_policy{ # gateway selection policy
-	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, $win) = @_;
+	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $gw_rc, $win, $cmd_bytes) = @_;
+	$cmd_bytes = 0 unless defined $cmd_bytes;
 	my $sel_gw = undef;
 	if ($fplan eq "US915"){
 		$sel_ch = $channels_d[$uplink_ch_index{$sel_ch}] if ($win == 1);
@@ -907,7 +993,7 @@ sub gs_policy{ # gateway selection policy
 	}
 	my $cb = $bw125;
 	$cb = $bw500 if ($fplan eq "US915");
-	my ($ack_sta, $ack_end) = ($sel_end+$win, $sel_end+$win+airtime($sel_sf, $cb, $overhead_d));
+	my ($ack_sta, $ack_end) = ($sel_end+$win, $sel_end+$win+airtime($sel_sf, $cb, $overhead_d+$cmd_bytes));
 	my ($min_resp, $sel_p, $min_dc) = (1, -9999999999999, 9999999999999);
 	my @avail = ();
 	
@@ -976,35 +1062,132 @@ sub gs_policy{ # gateway selection policy
 	return $sel_gw;
 }
 
-sub adr{ # ADR: the SF is already adjusted in min_sf; here only the transmit power is adjusted
+sub record_uplink_outcome{
+	my ($sel, $success) = @_;
+	push(@{$nuplink_success_history{$sel}}, $success ? 1 : 0);
+	shift(@{$nuplink_success_history{$sel}}) while (scalar @{$nuplink_success_history{$sel}} > $nbtrans_history_len);
+}
+
+sub nbtrans_policy{
+	my $sel = shift;
+	my $hist = $nuplink_success_history{$sel};
+
+	return $nnbtrans{$sel} if (!defined $hist || scalar @$hist < $nbtrans_min_samples);
+
+	my $recent_success = (sum @$hist) / scalar(@$hist);
+	my $target_nbtrans;
+
+	if ($recent_success >= $nbtrans_good_threshold){
+		$target_nbtrans = 1;
+	}elsif ($recent_success >= $nbtrans_moderate_threshold){
+		$target_nbtrans = 2;
+	}else{
+		$target_nbtrans = 3;
+	}
+
+	# The configuration value is now the maximum NbTrans that this adaptive baseline is allowed to request (default: 3)
+	# Setting nbtrans=1 disables repetition adaptation while keeping the rest of ADR active
+	$target_nbtrans = $configured_nbtrans if ($target_nbtrans > $configured_nbtrans);
+
+	printf "# NbTrans policy for %s: recent unique-uplink success %.3f over %d packets -> target NbTrans=%d (current=%d)\n",
+		$sel, $recent_success, scalar(@$hist), $target_nbtrans, $nnbtrans{$sel} if ($debug == 1);
+
+	return $target_nbtrans;
+}
+
+sub adr{ # SF is fixed by min_sf(); ADR adjusts TX power and may request NbTrans
 	my ($sel, $sel_sf) = @_;
 	my $m_snr = (max @{$powers{$sel}});
 	my $mgap = $m_snr - $snrs[$sel_sf-7] - $margin;
 	my $nstep = int($mgap/3);
-	my $new_ptx = $Ptx_l[$nptx{$sel}];
-	my $new_index = $nptx{$sel};
-	my $max_ptx = $Ptx_l[-3];
-	$max_ptx = $Ptx_l[-1] if ($fplan eq "US915");
-	while ($nstep != 0){
-		if ($nstep > 0){
-			$new_ptx -= 3;
-			$new_index -= 1;
-			$nstep -= 1;
-			if ($new_ptx <= $Ptx_l[0]){
-				last;
+	my $old_index = $nptx{$sel};
+	my $new_index = $old_index;
+	my $max_index = (scalar @Ptx_l) - 3; # 14 dBm EU868
+	$max_index = (scalar @Ptx_l) - 1 if ($fplan eq "US915");
+
+	while (($nstep > 0) && ($new_index > 0)){
+		$new_index -= 1;
+		$nstep -= 1;
+	}
+	while (($nstep < 0) && ($new_index < $max_index)){
+		$new_index += 1;
+		$nstep += 1;
+	}
+
+	my $new_ptx = ($new_index == $old_index) ? undef : $Ptx_l[$new_index];
+	$new_index = -1 if (!defined $new_ptx);
+
+	my $target_nbtrans = nbtrans_policy($sel);
+	$target_nbtrans = 1 if ($target_nbtrans < 1);
+	$target_nbtrans = 15 if ($target_nbtrans > 15);
+	my $new_nbtrans = ($target_nbtrans == $nnbtrans{$sel}) ? -1 : $target_nbtrans;
+
+	return ($new_ptx, $new_index, $new_nbtrans);
+}
+
+sub remove_scheduled_uplink{
+	my ($node, $seq) = @_;
+	return 0 if !defined $seq;
+	my $removed = 0;
+	foreach my $channel (keys %sorted_t){
+		my @keep = ();
+		foreach my $event (@{$sorted_t{$channel}}){
+			my ($n, $sta, $end, $ch, $sf, $event_seq, $scheduled_energy, $prev_dc, $is_nbtrans_copy) = @$event;
+			if (($n =~ /^[0-9]/) && ($n == $node) && ($event_seq == $seq)){
+				$removed += 1;
+				$total_trans -= 1;
+				$nconsumption{$node} -= $scheduled_energy if defined $scheduled_energy;
+				if (($fplan ne "US915") && defined $prev_dc){
+					$ndc{$node}{$band{$channel}} = $prev_dc;
+				}
+				if (defined $is_nbtrans_copy && $is_nbtrans_copy == 1){
+					$total_nbtrans_repetitions -= 1 if ($total_nbtrans_repetitions > 0);
+				}
+				print "# cancelling pending NbTrans copy of node $node FCntUp=$seq after valid downlink\n" if ($debug == 1);
+				next;
 			}
-		}else{
-			if ($new_ptx < $max_ptx){
-				$new_ptx += 3;
-				$nstep += 1;
-				$new_index += 1
-			}else{
-				last;
-			}
+			push @keep, $event;
+		}
+		@{$sorted_t{$channel}} = @keep;
+	}
+	$nnbtrans_count{$node} = 1 if ($removed > 0);
+	return $removed;
+}
+
+sub schedule_unconfirmed_after_downlink{
+	my ($node, $sf, $uplink_end, $downlink_end) = @_;
+	my $ch = $channels[rand @channels];
+	$ch = $channels[rand @channels] while (($ch == $nlast_ch{$node}) && (scalar @channels > 1));
+	my $new_start = $uplink_end + $nperiod{$node} + rand(1);
+	$new_start = $downlink_end + rand(1) if ($new_start <= $downlink_end);
+
+	if ($fplan ne "US915"){
+		if ($new_start < $ndc{$node}{$band{$ch}}){
+			$new_start = $ndc{$node}{$band{$ch}};
 		}
 	}
-	$new_ptx = undef if ($new_index == $nptx{$sel});
-	return ($new_ptx, $new_index);
+	return if ($new_start >= $sim_time);
+
+	$nunique{$node} += 1;
+	my $seq = $nunique{$node};
+	$ndeliv_seq{$node}{$seq} = 1;
+	$nnbtrans_count{$node} = 1;
+	my $at = airtime($sf, $bw125, $npkt{$node}); # LinkADRAns, if pending, is added when this event executes.
+	my $new_end = $new_start + $at;
+	my $i = 0;
+	foreach my $el (@{$sorted_t{$ch}}){
+		my ($n, $sta, $end, $ch_, $sf_, $seq_) = @$el;
+		last if ($sta > $new_start);
+		$i += 1;
+	}
+	my $scheduled_energy = $at * $Ptx_w[$nptx{$node}] + $at * $Pidle_w;
+	my $prev_dc = -1;
+	$prev_dc = $ndc{$node}{$band{$ch}} if ($fplan ne "US915");
+	splice(@{$sorted_t{$ch}}, $i, 0, [$node, $new_start, $new_end, $ch, $sf, $seq, $scheduled_energy, $prev_dc, 0]);
+	$total_trans += 1;
+	$nconsumption{$node} += $scheduled_energy;
+	$ndc{$node}{$band{$ch}} = $new_end + $dutycycle*$at if ($fplan ne "US915");
+	print "# $node, next FCntUp=$seq scheduled after LinkADRReq at $new_start -> $new_end\n" if ($debug == 1);
 }
 
 sub node_col{ # handle node collisions
@@ -1283,6 +1466,8 @@ sub read_data{
 		$nptx{$n} = (scalar @Ptx_l) - 3; # start with the highest Ptx (14 dBm)
 		$nptx{$n} = (scalar @Ptx_l) - 1 if ($fplan eq "US915"); # 20 dBm
 		$nresponse{$n} = 0;
+		$nnbtrans{$n} = 1; # default until a LinkADRReq is received
+		$nnbtrans_count{$n} = 1;
 		$nretransmissions{$n} = 0;
 		if ($conf_num > 0){
 			$nconfirmed{$n} = 1;
@@ -1309,6 +1494,7 @@ sub read_data{
 			$ndc{$n}{$bnd} = -1;
 		}
 		@{$powers{$n}} = ();
+		@{$nuplink_success_history{$n}} = ();
 	}
 	@gateways = sort { $a->[0] cmp $b->[0] } @gateways;
 	my $last_gw = $gateways[-1][0];
