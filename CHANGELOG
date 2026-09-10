@@ -1,5 +1,8 @@
 CHANGELOG
 ----------
+v2026.9.10
+* ADR's mech for NbTrans now follows the Chirpstack implementation
+
 v2026.8.27
 * added support for adaptive unconfirmed uplink copies (NbTrans)
 * added new code comments with the help of GPT-5.6
