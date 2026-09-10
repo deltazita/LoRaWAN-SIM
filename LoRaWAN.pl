@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                   v2026.8.27                                    #
+#                                   v2026.9.10                                    #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum                                                      #
@@ -18,7 +18,7 @@
 # -- Multiple channels                                                            #
 # -- Collision handling for both uplink and downlink transmissions                #
 # -- Energy consumption calculation (uplink+downlink)                             #
-# -- ADR support (TX power + NbTrans for unconfirmed uplinks)                     #
+# -- ADR support (TX power + ChirpStack-like NbTrans for unconfirmed uplinks)     #
 # -- Network server policies (downlink packet & gw selection)                     #
 #                                                                                 #
 # author: Dr. Dimitrios Zorbas                                                    #
@@ -216,7 +216,7 @@ my $configured_max_retr = as_int(config_value(\%CONFIG, "max_retr", 1), "max_ret
 my $configured_pkt_size = as_int(config_value(\%CONFIG, "pkt_size", 16), "pkt_size");
 my $configured_adr = as_int(config_value(\%CONFIG, "adr", 1), "adr");
 my $configured_double_gws = as_int(config_value(\%CONFIG, "double_gws", 0), "double_gws");
-my $configured_nbtrans = as_int(config_value(\%CONFIG, "nbtrans", 1), "nbtrans"); # maximum NbTrans allowed by the adaptive policy (1 = no repetitions)
+my $configured_nbtrans = as_int(config_value(\%CONFIG, "nbtrans", 1), "nbtrans"); # initial NbTrans; ChirpStack ADR subsequently adapts it in the range 1..3
 my $terrain_file = exists $CONFIG{"terrain_file"}
 	? resolve_path($CONFIG{"terrain_file"}, $CONFIG{"__config_dir"})
 	: generate_terrain_from_config(\%CONFIG);
@@ -232,7 +232,7 @@ die "max_retr must be higher than or equal to 0\n" if ($configured_max_retr < 0)
 die "pkt_size must be higher than 0\n" if ($configured_pkt_size < 1);
 die "adr must be 0 or 1\n" if (($configured_adr != 0) && ($configured_adr != 1));
 die "double_gws must be 0 or 1\n" if (($configured_double_gws != 0) && ($configured_double_gws != 1));
-die "nbtrans must be between 1 and 15\n" if (($configured_nbtrans < 1) || ($configured_nbtrans > 15));
+die "nbtrans must be between 1 and 3\n" if (($configured_nbtrans < 1) || ($configured_nbtrans > 3));
 
 # node attributes
 my %ncoords = (); # node coordinates
@@ -254,7 +254,7 @@ my %npkt = (); # packet size per node
 my %ntotretr = (); # number of retransmissions per node (total)
 my %nlast_ch = (); # last transmission time
 my %ndeliv_seq = (); # 1 = this FCntUp has not yet been counted as delivered
-my %nuplink_success_history = (); # recent unique-uplink outcomes per ED: 1=delivered, 0=lost
+my %nuplink_fcnt_history = (); # ChirpStack-style ADR history: last 20 received unique FCntUp values per ED
 
 # gw attributes
 my %gcoords = (); # gw coordinates
@@ -358,11 +358,14 @@ my %sf_retrans = (); # number of retransmissions per SF
 my $adr_on = $configured_adr; # ADR is used or not (=0)
 my $double_gws = $configured_double_gws; # enable 8x2 channel gateways
 
-# NbTrans adaptation policy parameters 
+# ChirpStack default NbTrans adaptation parameters.
+# ChirpStack requires 20 received unique uplinks, estimates packet loss from
+# gaps in FCntUp, and maps (packet-loss range, current NbTrans) through:
+#   <5%   : [1,1,2]
+#   <10%  : [1,2,3]
+#   <30%  : [2,3,3]
+#   >=30% : [3,3,3]
 my $nbtrans_history_len = 20;
-my $nbtrans_min_samples = 10;
-my $nbtrans_good_threshold = 0.90;
-my $nbtrans_moderate_threshold = 0.70;
 
 # application server
 my $policy = 1; # gateway selection policy for downlink traffic
@@ -509,11 +512,11 @@ while (1){
 					$failed = 1;
 				}
 			}
-		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful unconfirmed physical transmission
+		}elsif ((scalar @$gw_rc > 0) && ($nconfirmed{$sel} == 0)){ # successful unconfirmed transmission
 			# Several NbTrans copies may carry the same FCntUp
 			# count delivery and update the NS success history only on the first successfully decoded copy
 			if (exists $ndeliv_seq{$sel}{$sel_seq}){
-				record_uplink_outcome($sel, 1);
+				record_uplink_fcnt($sel, $sel_seq);
 				$ndeliv{$sel} += 1;
 				delete $ndeliv_seq{$sel}{$sel_seq};
 			}
@@ -597,8 +600,9 @@ while (1){
 
 			my $repeat_same_fcnt = ($nnbtrans_count{$sel} < $nnbtrans{$sel}) ? 1 : 0;
 			if (($repeat_same_fcnt == 0) && (exists $ndeliv_seq{$sel}{$sel_seq})){
-				# No copy of this FCntUp reached any GW: one unique-uplink failure
-				record_uplink_outcome($sel, 0);
+				# No copy of this FCntUp reached any GW. ChirpStack does not append an
+				# explicit failure to ADR history; the loss is inferred later from the
+				# FCntUp gap when a subsequent unique uplink is received.
 				$dropped_unc += 1;
 				delete $ndeliv_seq{$sel}{$sel_seq};
 				print "# $sel 's unconfirmed packet FCntUp=$sel_seq lost after $nnbtrans{$sel} transmission(s)!\n" if ($debug == 1);
@@ -1062,35 +1066,67 @@ sub gs_policy{ # gateway selection policy
 	return $sel_gw;
 }
 
-sub record_uplink_outcome{
-	my ($sel, $success) = @_;
-	push(@{$nuplink_success_history{$sel}}, $success ? 1 : 0);
-	shift(@{$nuplink_success_history{$sel}}) while (scalar @{$nuplink_success_history{$sel}} > $nbtrans_history_len);
-}
+sub record_uplink_fcnt{
+	my ($sel, $fcnt) = @_;
+	my $hist = $nuplink_fcnt_history{$sel};
 
-sub nbtrans_policy{
-	my $sel = shift;
-	my $hist = $nuplink_success_history{$sel};
-
-	return $nnbtrans{$sel} if (!defined $hist || scalar @$hist < $nbtrans_min_samples);
-
-	my $recent_success = (sum @$hist) / scalar(@$hist);
-	my $target_nbtrans;
-
-	if ($recent_success >= $nbtrans_good_threshold){
-		$target_nbtrans = 1;
-	}elsif ($recent_success >= $nbtrans_moderate_threshold){
-		$target_nbtrans = 2;
-	}else{
-		$target_nbtrans = 3;
+	# ChirpStack ignores re-transmissions / repeated NbTrans copies carrying
+	# the same FCntUp as the latest ADR-history entry.
+	if ((defined $hist) && (scalar @$hist > 0) && ($hist->[-1] == $fcnt)){
+		return;
 	}
 
-	# The configuration value is now the maximum NbTrans that this adaptive baseline is allowed to request (default: 3)
-	# Setting nbtrans=1 disables repetition adaptation while keeping the rest of ADR active
-	$target_nbtrans = $configured_nbtrans if ($target_nbtrans > $configured_nbtrans);
+	push(@{$nuplink_fcnt_history{$sel}}, $fcnt);
+	shift(@{$nuplink_fcnt_history{$sel}}) while (scalar @{$nuplink_fcnt_history{$sel}} > $nbtrans_history_len);
+}
 
-	printf "# NbTrans policy for %s: recent unique-uplink success %.3f over %d packets -> target NbTrans=%d (current=%d)\n",
-		$sel, $recent_success, scalar(@$hist), $target_nbtrans, $nnbtrans{$sel} if ($debug == 1);
+# according to https://raw.githubusercontent.com/chirpstack/chirpstack/master/chirpstack/src/adr/default.rs
+sub nbtrans_policy{
+	my $sel = shift;
+	my $hist = $nuplink_fcnt_history{$sel};
+
+	# ChirpStack reports 0% loss until 20 received history entries exist.
+	my $pkt_loss_rate = 0.0;
+
+	if ((defined $hist) && (scalar @$hist >= $nbtrans_history_len)){
+		my $lost_packets = 0;
+		my $previous_fcnt = $hist->[0];
+
+		for (my $i = 1; $i < scalar @$hist; $i += 1){
+			my $fcnt = $hist->[$i];
+			my $gap = $fcnt - $previous_fcnt - 1;
+			$lost_packets += $gap if ($gap > 0);
+			$previous_fcnt = $fcnt;
+		}
+
+		# Matches ChirpStack: lost_packets / uplink_history.len() * 100.
+		$pkt_loss_rate = 100.0 * $lost_packets / scalar(@$hist);
+	}
+
+	my $current_nbtrans = $nnbtrans{$sel};
+	$current_nbtrans = 1 if ($current_nbtrans < 1);
+	$current_nbtrans = 3 if ($current_nbtrans > 3);
+	my $idx = $current_nbtrans - 1;
+
+	my @loss_lt_5  = (1, 1, 2);
+	my @loss_lt_10 = (1, 2, 3);
+	my @loss_lt_30 = (2, 3, 3);
+	my @loss_ge_30 = (3, 3, 3);
+
+	my $target_nbtrans;
+	if ($pkt_loss_rate < 5.0){
+		$target_nbtrans = $loss_lt_5[$idx];
+	}elsif ($pkt_loss_rate < 10.0){
+		$target_nbtrans = $loss_lt_10[$idx];
+	}elsif ($pkt_loss_rate < 30.0){
+		$target_nbtrans = $loss_lt_30[$idx];
+	}else{
+		$target_nbtrans = $loss_ge_30[$idx];
+	}
+
+	printf "# NbTrans policy for %s: packet loss %.3f%% over %d received unique uplinks -> target NbTrans=%d (current=%d)\n",
+		$sel, $pkt_loss_rate, (defined $hist ? scalar(@$hist) : 0),
+		$target_nbtrans, $nnbtrans{$sel} if ($debug == 1);
 
 	return $target_nbtrans;
 }
@@ -1119,7 +1155,7 @@ sub adr{ # SF is fixed by min_sf(); ADR adjusts TX power and may request NbTrans
 
 	my $target_nbtrans = nbtrans_policy($sel);
 	$target_nbtrans = 1 if ($target_nbtrans < 1);
-	$target_nbtrans = 15 if ($target_nbtrans > 15);
+	$target_nbtrans = 3 if ($target_nbtrans > 3);
 	my $new_nbtrans = ($target_nbtrans == $nnbtrans{$sel}) ? -1 : $target_nbtrans;
 
 	return ($new_ptx, $new_index, $new_nbtrans);
@@ -1466,7 +1502,7 @@ sub read_data{
 		$nptx{$n} = (scalar @Ptx_l) - 3; # start with the highest Ptx (14 dBm)
 		$nptx{$n} = (scalar @Ptx_l) - 1 if ($fplan eq "US915"); # 20 dBm
 		$nresponse{$n} = 0;
-		$nnbtrans{$n} = 1; # default until a LinkADRReq is received
+		$nnbtrans{$n} = $configured_nbtrans; # initial state; ChirpStack ADR adapts it in 1..3
 		$nnbtrans_count{$n} = 1;
 		$nretransmissions{$n} = 0;
 		if ($conf_num > 0){
@@ -1494,7 +1530,7 @@ sub read_data{
 			$ndc{$n}{$bnd} = -1;
 		}
 		@{$powers{$n}} = ();
-		@{$nuplink_success_history{$n}} = ();
+		@{$nuplink_fcnt_history{$n}} = ();
 	}
 	@gateways = sort { $a->[0] cmp $b->[0] } @gateways;
 	my $last_gw = $gateways[-1][0];
