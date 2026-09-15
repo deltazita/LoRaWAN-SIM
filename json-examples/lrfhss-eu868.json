@@ -1,0 +1,19 @@
+{
+  "packets_per_hour": 12,
+  "simulation_time": 3,
+  "nodes": 5000,
+  "gateways": 2,
+  "terrain_side": 4000,
+  "frequency_plan": "EU868",
+  "uplink_modulation": "LR-FHSS",
+  "lrfhss_dr": 8,
+  "number_of_bands": 2,
+  "pkt_size": 16,
+  "with_ack": 0,
+  "max_retr": 1,
+  "nbtrans": 1,
+  "adr": 1,
+  "rx2sf": 9,
+  "picture": 0,
+  "seed": 42
+}

@@ -14,6 +14,7 @@ A LoRaWAN simulator for confirmed/unconfirmed transmissions and multiple gateway
 
 ## Features:
 - EU868 or US915 frequency plans
+- LR-FHSS uplinks with frequency hopping, header replicas and coded fragment recovery
 - Multiple half-duplex gateways
 - 1% radio duty cycle for uplink transmissions
 - 1 or 10% radio duty cycle for downlink transmissions
@@ -89,6 +90,18 @@ perl LoRaWAN.pl --json config.json
 ```
 
 If the JSON file does not include a terrain file, the simulator generates one internally using `generate_terrain.pl` and the values of `terrain_side`, `nodes`, and `gateways`. The original positional-argument workflow remains supported.
+
+## LR-FHSS uplinks
+
+```sh
+perl LoRaWAN.pl --json json-examples/lrfhss-eu868.json
+perl LoRaWAN.pl --json json-examples/lrfhss-us915.json
+```
+
+Use `uplink_modulation: "LR-FHSS"` and `lrfhss_dr` in JSON input. EU868 DR8–DR11
+and US915 DR5–DR6 are supported. The default remains LoRa. See [LRFHSS.md](LRFHSS.md)
+for configuration, model assumptions, and tests. Keep `lib/LoRaWAN/LRFHSS.pm`
+next to the simulator in the repository's `lib` directory.
 
 ## AI-assisted recommendation system
 The repository includes a Python launcher that runs the LoRaWAN simulator once for a baseline configuration and then uses trained ML models to recommend parameter changes. The recommendation targets are:

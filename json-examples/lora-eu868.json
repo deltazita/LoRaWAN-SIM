@@ -1,7 +1,7 @@
 {
   "packets_per_hour": 12,
   "simulation_time": 5,
-  "nodes": 2000,
+  "nodes": 3000,
   "gateways": 2,
   "terrain_side": 3000,
   "number_of_bands": 2,

@@ -1,5 +1,11 @@
 CHANGELOG
 ----------
+v2026.9.15
+* Added support for LR-FHSS (EU868 DR8-DR11 and US915 DR5-DR6 uplink profiles)
+* FHSS can currently be used only via a JSON config file (see json-examples folders for examples)
+* Generated a Markdown file to wrap up functionalities and descriptions
+* The ML recommendation system works only with the LoRa uplink modulation
+
 v2026.9.10
 * ADR's mech for NbTrans now follows the Chirpstack implementation
 

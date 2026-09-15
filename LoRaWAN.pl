@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                   v2026.9.10                                    #
+#                                   v2026.9.14                                    #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum                                                      #
@@ -10,6 +10,7 @@
 # -- 1% radio duty cycle per band for the nodes (EU868)                           #
 # -- 1 or 10% radio duty cycle for the gateways (EU868)                           #
 # -- Acks with two receive windows (RX1, RX2)                                     #
+# -- LR-FHSS uplinks (header replicas, hopping, coded fragment recovery)          #
 # -- Non-orthogonal SF transmissions                                              #
 # -- Periodic or non-periodic (exponential) transmission rate                     #
 # -- Percentage of nodes required confirmed transmissions                         #
@@ -27,6 +28,9 @@
 ###################################################################################
 
 use strict;
+use FindBin qw($Bin);
+use lib "$Bin/lib";
+use LoRaWAN::LRFHSS;
 use POSIX;
 use List::Util qw(min max sum);
 use Time::HiRes qw(time);
@@ -71,6 +75,8 @@ my %CONFIG_ALIASES = (
 	"payload_size" => "pkt_size",
 	"adr_on" => "adr",
 	"nb_trans" => "nbtrans",
+	"modulation" => "uplink_modulation",
+	"region" => "frequency_plan",
 );
 
 sub usage {
@@ -191,7 +197,9 @@ sub generate_terrain_from_config {
 	make_path($tmp_dir) unless (-d $tmp_dir);
 	my $terrain_file = File::Spec->catfile($tmp_dir, "terrain_${side}_${nodes}_${gateways}_$$.txt");
 
-	open(my $gen_fh, "-|", "perl", $generator, $side, $nodes, $gateways)
+	my @generator_args = ($side, $nodes, $gateways);
+	push @generator_args, as_int($cfg_ref->{seed}, "seed") if exists $cfg_ref->{seed};
+	open(my $gen_fh, "-|", "perl", $generator, @generator_args)
 		or die "Error: could not execute $generator\n";
 	open(my $out_fh, ">", $terrain_file)
 		or die "Error: could not create generated terrain file $terrain_file\n";
@@ -217,6 +225,35 @@ my $configured_pkt_size = as_int(config_value(\%CONFIG, "pkt_size", 16), "pkt_si
 my $configured_adr = as_int(config_value(\%CONFIG, "adr", 1), "adr");
 my $configured_double_gws = as_int(config_value(\%CONFIG, "double_gws", 0), "double_gws");
 my $configured_nbtrans = as_int(config_value(\%CONFIG, "nbtrans", 1), "nbtrans"); # initial NbTrans; ChirpStack ADR subsequently adapts it in the range 1..3
+my $fplan = uc(config_value(\%CONFIG, "frequency_plan", "EU868"));
+die "frequency_plan must be EU868 or US915\n" unless $fplan eq 'EU868' || $fplan eq 'US915';
+my $modulation = config_value(\%CONFIG, "uplink_modulation", "LoRa"); # leave LoRa as the default modulation. FHSS can only be used via a json configuration file
+$modulation =~ s/[-_]//g;
+die "uplink_modulation must be LoRa or LRFHSS\n" unless $modulation eq 'LoRa' || $modulation eq 'LRFHSS';
+my $lrfhss = $modulation eq 'LRFHSS';
+my $lr_profile;
+my %lr_keys = map { $_ => 1 } qw(lrfhss_dr lrfhss_sensitivity_dbm lrfhss_capture_db);
+foreach my $key (grep { /^lrfhss_/ } keys %CONFIG) { # make sure all required info is given
+	die "Unknown LR-FHSS configuration key '$key'\n" unless $lr_keys{$key};
+}
+if ($lrfhss) {
+	my $dr = as_int(config_value(\%CONFIG, "lrfhss_dr", $fplan eq 'EU868' ? 8 : 5), "lrfhss_dr");
+	$lr_profile = LoRaWAN::LRFHSS::profile($fplan, $dr);
+	my $limit = $lr_profile->{max_payload} - ($configured_adr ? 2 : 0);
+	die "pkt_size exceeds LR-FHSS DR$dr application limit ($limit bytes, including space reserved for ADR answers)\n"
+		if $configured_pkt_size > $limit;
+} elsif (grep { /^lrfhss_/ } keys %CONFIG) {
+	die "lrfhss_* settings require uplink_modulation LRFHSS\n";
+}
+# Receiver assumptions, configurable independently of the regional PHY profile.
+my $lr_sensitivity = as_number(config_value(\%CONFIG, "lrfhss_sensitivity_dbm", $lrfhss && $lr_profile->{cr_num} == 2 ? -134 : -137), "lrfhss_sensitivity_dbm");
+my $lr_capture = as_number(config_value(\%CONFIG, "lrfhss_capture_db", 6), "lrfhss_capture_db");
+die "lrfhss_capture_db must be nonnegative\n" if $lr_capture < 0;
+if (exists $CONFIG{seed}) {
+	my $seed = as_int($CONFIG{seed}, "seed");
+	srand($seed);
+	Math::Random::random_set_seed_from_phrase("LoRaWAN-SIM:$seed");
+}
 my $terrain_file = exists $CONFIG{"terrain_file"}
 	? resolve_path($CONFIG{"terrain_file"}, $CONFIG{"__config_dir"})
 	: generate_terrain_from_config(\%CONFIG);
@@ -271,7 +308,6 @@ my %gtime = (); # gateway downlink time per band or channel
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW (SX1262)
 my @gw_sensis = ([7,-127,-122,-116], [8,-129,-125,-119], [9,-132.5,-128,-122], [10,-135.5,-130,-125], [11,-138,-132,-128], [12,-141,-135,-129]); # SX1302/3 for BW125
 my @thresholds = ([1,-8,-9,-9,-9,-9], [-11,1,-11,-12,-13,-13], [-15,-13,1,-13,-14,-15], [-19,-18,-17,1,-17,-18], [-22,-22,-21,-20,1,-20], [-25,-25,-25,-24,-23,1]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
-my @snrs = (-7.5, -10, -12.5, -15, -17.5, -20);
 my $margin = 5;
 my $var = 3.57; # variance
 my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
@@ -284,7 +320,7 @@ my @Ptx_l = (2, 5, 8, 11, 14, 17, 20); # dBm
 my @Ptx_w = (12*$volt, 20*$volt, 32*$volt, 51*$volt, 76*$volt, 90*$volt, 105*$volt); # Ptx cons. for 2, 5, 8, 11, 14, 17, and 20dBm (mA * V = mW)
 my $Prx_w = 46 * $volt;
 my $Pidle_w = 30 * $volt; # this is actually the consumption of the microcontroller in idle mode
-my $fplan = "EU868"; # EU868 (default) or US915
+# Frequency plan is selected by JSON; positional input defaults to EU868.
 # ------ EU868 ------- #
 my @channels = (868100000, 868300000, 868500000, 867100000, 867300000, 867500000, 867700000, 867900000); # TTN channels
 my @bands = ("48", "47");
@@ -303,7 +339,18 @@ if (($fplan eq "EU868") && ($number_of_bands == 1)){
 	@channels = grep { $band{$_} eq "48" } @channels;
 	@bands = ("48");
 }
+if ($lrfhss) {
+	if ($fplan eq 'US915') {
+		@channels = map { 903000000 + $_ * 1600000 } 0 .. 7;
+		%uplink_ch_index = map { $channels[$_] => $_ } 0 .. 7;
+	} elsif ($lr_profile->{bandwidth} == 336000) {
+		# Fully contained in bands 48 (868.0-868.6) and 47 (865-868).
+		@channels = (868300000, ($number_of_bands == 2 ? (866900000, 867300000, 867700000) : ()));
+		%band = (868300000 => "48", 866900000 => "47", 867300000 => "47", 867700000 => "47");
+	}
+}
 my $bw500 = 500000;
+my $window_bw = ($lrfhss && $fplan eq "US915") ? $bw500 : $bw125;
 my @channels_d = (923300000, 923900000, 924500000, 925100000, 925700000, 926300000, 926900000, 927500000); # 8x500kHz RX1 downlink channels (all SFs)
 
 # packet specific parameters
@@ -331,7 +378,7 @@ my $full_collision = 1; # take into account non-orthogonal SF transmissions or n
 my $max_retr = $configured_max_retr; # max number of retransmissions per packet (default value = 1)
 my $period = 3600/$packets_per_hour; # time period between transmissions
 my $sim_time = $simulation_time_h*3600; # given simulation time
-my $debug = 0; # enable debug mode
+my $debug = as_int(config_value(\%CONFIG, "debug", 0), "debug"); # enable debug mode
 my $sim_end = 0;
 my ($terrain, $norm_x, $norm_y) = (0, 0, 0); # terrain side, normalised terrain side
 my $start_time = time; # just for statistics
@@ -342,7 +389,7 @@ my $total_retrans = 0; # number of confirmed re-transmission packets
 my $total_nbtrans_repetitions = 0; # extra unconfirmed copies due to NbTrans
 my $no_rx1 = 0; # no gw was available in RX1
 my $no_rx2 = 0; # no gw was available in RX1 or RX2
-my $picture = 1; # generate an energy consumption or a PRR map (see line after stats)
+my $picture = as_int(config_value(\%CONFIG, "picture", 1), "picture"); # generate an energy consumption or a PRR map (see line after stats)
 my $fixed_packet_rate = 1; # send packets periodically with a fixed rate (=1) or at random (=0)
 my $total_down_time = 0; # total downlink time
 my $avg_sf = 0;
@@ -380,21 +427,32 @@ my %pl_ng; # path-loss (without shadowing) per node-gw pair
 my %dist_ng; # node-gw distance 
 
 read_data(); # read terrain file
+my $lr_radio = $lrfhss ? LoRaWAN::LRFHSS->new(
+	power => \&lr_received_power,
+	capture => sub {
+		my ($victim, $interferer) = @_;
+		return $thresholds[$victim->{sf}-7][$interferer->{sf}-7]
+			unless $victim->{profile} || $interferer->{profile};
+		return $lr_capture;
+	},
+) : undef;
+my $lr_completed;
+
 
 # first transmission
 my @init_trans = ();
-foreach my $n (keys %ncoords){
+foreach my $n (sort {$a <=> $b} keys %ncoords){
 	my $start = random_uniform(1, 0, $period);
-	my $sf = min_sf($n);
+	my $sf = $lrfhss ? init_lrfhss_node($n) : min_sf($n);
 	$avg_sf += $sf;
 	$avg_pkt += $npkt{$n};
-	my $airt = airtime($sf, $bw125, $npkt{$n});
+	my $airt = uplink_airtime($sf, $npkt{$n});
 	my $stop = $start + $airt;
-	print "# $n will transmit from $start to $stop (SF $sf)\n" if ($debug == 1);
+	print "# $n will transmit from $start to $stop (SF $sf)\n" if ($debug == 1 && !$lrfhss);
 	$nunique{$n} = 1;
 	$ndeliv_seq{$n}{$nunique{$n}} = 1;
 	my $ch = $channels[rand @channels];
-	push (@init_trans, [$n, $start, $stop, $ch, $sf, $nunique{$n}]);
+	push (@init_trans, [$n, $start, $stop, $ch, $sf, $nunique{$n}, undef, undef, undef, $npkt{$n}, $nptx{$n}]);
 	$nconsumption{$n} += $airt * $Ptx_w[$nptx{$n}] + $airt * $Pidle_w;
 	$total_trans += 1;
 	$ndc{$n}{$band{$ch}} = $stop + $dutycycle*$airt if ($fplan ne "US915");
@@ -410,31 +468,16 @@ undef @init_trans;
 # main loop
 while (1){
 	print "-------------------------------\n" if ($debug == 1);
-	foreach my $ch (keys %sorted_t){
-		delete $sorted_t{$ch} if @{$sorted_t{$ch}} == 0;
-	}
-	
-	# select the channel with earliest transmission among all first transmissions
-# 	my $min_ch = (sort {$sorted_t{$a}[0][1] <=> $sorted_t{$b}[0][1]} keys %sorted_t)[0];
-	my $min_ch;
-	my $min_t;
-	while (my ($ch, $list) = each %sorted_t){
-		my $t = $list->[0][1];  # start time
-		if (!defined $min_ch || $t < $min_t){
-			$min_ch = $ch;
-			$min_t  = $t;
-		}
-	}
-	last if !defined $min_ch;
-
-	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @{shift(@{$sorted_t{$min_ch}})};
+	my $event = next_transmission();
+	last unless $event;
+	my ($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq) = @$event;
 	if (exists $ncoords{$sel}){ # just a progress trick
 		if ($sel == 1){
 			$| = 1;
 			printf STDERR "%.2f%%\r", 100*$sel_end/$sim_time;
 		}
 	}
-	last if ($sel_sta > $sim_time);
+	last if (!$lrfhss && $sel_sta > $sim_time);
 	print "# grabbed $sel, transmission from $sel_sta -> $sel_end\n" if ($debug == 1);
 	$sim_end = $sel_end;
 	if ($auto_simtime == 1){
@@ -456,7 +499,7 @@ while (1){
 		
 		# For unconfirmed traffic, a LinkADRReq may have arrived after this event was scheduled.
 		# Add LinkADRAns to the first subsequently transmitted uplink at execution time.
-		if (($nconfirmed{$sel} == 0) && ($nresponse{$sel} == 1)){
+		if (!$lrfhss && ($nconfirmed{$sel} == 0) && ($nresponse{$sel} == 1)){
 			my $old_at = $sel_end - $sel_sta;
 			my $new_at = airtime($sel_sf, $bw125, $npkt{$sel}+$linkadr_ans);
 			if ($new_at > $old_at){
@@ -468,11 +511,11 @@ while (1){
 			print "# $sel includes LinkADRAns in FCntUp=$sel_seq\n" if ($debug == 1);
 		}
 
-		my $gw_rc = node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq); # check collisions and return a list of gws that received the uplink pkt
+		my $gw_rc = $lrfhss ? $lr_completed->{received} : node_col($sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $sel_seq); # check collisions and return a list of gws that received the uplink pkt
 		my $rwindow = 0;
 		my $failed = 0;
 		$nlast_ch{$sel} = $sel_ch;
-		# keep the last 20 max received powers
+		# Keep the last 10 best-gateway SNR samples at the current TX power.
 		my $max_snr = -999;
 		foreach my $g (@$gw_rc){
 			my $snr = @$g[1] - $noise;
@@ -561,14 +604,19 @@ while (1){
 					$new_trans = 1;
 					print "# $sel 's packet lost!\n" if ($debug == 1);
 				}
-				$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw125)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw125 * ($Prx_w + $Pidle_w);
-				$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw125 * ($Prx_w + $Pidle_w);
-				$at = airtime($sel_sf, $bw125, $npkt{$sel});
+				if ($lrfhss) {
+					$nconsumption{$sel} += lr_rx_energy($sel_sf);
+				} else {
+					$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$window_bw)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$window_bw * ($Prx_w + $Pidle_w);
+					$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$window_bw * ($Prx_w + $Pidle_w);
+				}
+				$at = uplink_airtime($sel_sf, $npkt{$sel});
 				if ($new_trans == 0){
 					$sel_sta = $sel_end + 2 + 1 + rand(2);
 				}else{
 					$sel_sta = $sel_end + 2 + $nperiod{$sel} + rand(1);
 				}
+				$sel_sta = max($sel_sta, $sel_end + 2 + ($preamble+4.25)*(2**$rx2sf)/$window_bw) if $lrfhss;
 				if ($fplan ne "US915"){
 					if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
 						print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
@@ -584,19 +632,23 @@ while (1){
 				}
 				if (($new_trans == 1) && ($sel_sta < $sim_time)){
 					$nunique{$sel} += 1;
-					$total_retrans += 1;
 					$ndeliv_seq{$sel}{$nunique{$sel}} = 1;
 				}
 				$total_trans += 1 if ($sel_sta < $sim_time);
-				splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}]);
+				$total_retrans += 1 if (!$new_trans && $sel_sta < $sim_time);
+				splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}, undef, undef, undef, $npkt{$sel}, $nptx{$sel}]);
 				print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
-				$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
+				$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w if $sel_sta < $sim_time;
 				$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
 			}
 		}else{
 			# An unconfirmed uplink always opens RX1/RX2, even if no gateway decoded it
-			$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$bw125)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$bw125 * ($Prx_w + $Pidle_w);
-			$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$bw125 * ($Prx_w + $Pidle_w);
+			if ($lrfhss) {
+				$nconsumption{$sel} += lr_rx_energy($sel_sf);
+			} else {
+				$nconsumption{$sel} += (2-($preamble+4.25)*(2**$sel_sf)/$window_bw)*$Pidle_w + ($preamble+4.25)*(2**$sel_sf)/$window_bw * ($Prx_w + $Pidle_w);
+				$nconsumption{$sel} += ($preamble+4.25)*(2**$rx2sf)/$window_bw * ($Prx_w + $Pidle_w);
+			}
 
 			my $repeat_same_fcnt = ($nnbtrans_count{$sel} < $nnbtrans{$sel}) ? 1 : 0;
 			if (($repeat_same_fcnt == 0) && (exists $ndeliv_seq{$sel}{$sel_seq})){
@@ -614,19 +666,14 @@ while (1){
 			my $next_seq = $sel_seq;
 			if ($repeat_same_fcnt == 1){
 				$nnbtrans_count{$sel} += 1;
-				$total_nbtrans_repetitions += 1;
 				$sel_sta = $sel_end + 2 + 1 + rand(2); # after RX2 + random delay
 			}else{
 				$nnbtrans_count{$sel} = 1;
 				$sel_sta = $sel_end + $nperiod{$sel} + rand(1);
-				if ($sel_sta < $sim_time){
-					$nunique{$sel} += 1;
-					$next_seq = $nunique{$sel};
-					$ndeliv_seq{$sel}{$next_seq} = 1;
-				}
 			}
 
-			my $at = airtime($sel_sf, $bw125, $npkt{$sel});
+			$sel_sta = max($sel_sta, $sel_end + 2 + airtime($rx2sf, $window_bw, $overhead_d+$linkadr_req)) if $lrfhss;
+			my $at = uplink_airtime($sel_sf, $npkt{$sel});
 			if ($fplan ne "US915"){
 				if ($sel_sta < $ndc{$sel}{$band{$sel_ch}}){
 					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
@@ -641,11 +688,18 @@ while (1){
 				$i += 1;
 			}
 			if ($sel_sta < $sim_time){
+				if (!$repeat_same_fcnt) {
+					$nunique{$sel} += 1;
+					$next_seq = $nunique{$sel};
+					$ndeliv_seq{$sel}{$next_seq} = 1;
+				} else {
+					$total_nbtrans_repetitions += 1;
+				}
 				my $scheduled_energy = $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
 				my $prev_dc = -1;
 				$prev_dc = $ndc{$sel}{$band{$sel_ch}} if ($fplan ne "US915");
-				# Extra tuple fields are accounting metadata used only if a pending NbTrans copy is cancelled.
-				splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $next_seq, $scheduled_energy, $prev_dc, $repeat_same_fcnt]);
+				# Tuple fields 6..8 support cancellation; 9..10 snapshot PHY bytes/TX power for LR-FHSS.
+				splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $next_seq, $scheduled_energy, $prev_dc, $repeat_same_fcnt, $npkt{$sel}, $nptx{$sel}]);
 				$total_trans += 1;
 				$nconsumption{$sel} += $scheduled_energy;
 				$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
@@ -688,6 +742,14 @@ while (1){
 			$index += 1;
 		}
 		splice @{$gdest{$sel}}, $index, 1;
+		if ($lrfhss) {
+			$failed = @{$lr_completed->{received}} ? 0 : 1;
+			# Replace the empty windows prepaid by unconfirmed uplinks with the
+			# actual LoRa downlink listening time, once per transmission attempt.
+			$nconsumption{$dest} -= lr_rx_energy($sf) unless $nconfirmed{$dest};
+			$nconsumption{$dest} += lr_rx_energy($sf, $rwindow, $sel_end-$sel_sta, !$failed);
+			print "# LR-FHSS LoRa downlink to $dest " . ($failed ? "lost" : "received") . " (SF$sel_sf)\n" if $debug;
+		} else {
 		# check if the transmission can reach the node
 		my $G = random_normal(1, 0, 1);
 		my $d = $dist_ng{$dest}{$sel};
@@ -760,6 +822,8 @@ while (1){
 				}
 			}
 		}
+		}
+
 		my $new_trans = 0;
 		if ($failed == 0){
 			if ($nconfirmed{$dest} == 1){
@@ -771,7 +835,7 @@ while (1){
 			}
 			my $cb = $bw125;
 			$cb = $bw500 if ($fplan eq "US915");
-			if ($rwindow == 2){ # also count the RX1 window
+			if (!$lrfhss && $rwindow == 2){ # also count the RX1 window
 				$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$cb)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$cb * ($Prx_w + $Pidle_w);
 			}
 			my $extra_bytes = 0;
@@ -782,13 +846,15 @@ while (1){
 			}
 			if ($pow != -1){
 				$nptx{$dest} = $pow;
+				# Samples taken before this change describe the old TX power.
+				@{$powers{$dest}} = ();
 				print "# transmit power of $dest is set to $Ptx_l[$pow]dBm\n" if ($debug == 1);
 			}
 			if ($nbtrans != -1){
 				$nnbtrans{$dest} = $nbtrans;
 				print "# NbTrans of $dest is set to $nbtrans\n" if ($debug == 1);
 			}
-			$nconsumption{$dest} += airtime($sel_sf, $cb, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w);
+			$nconsumption{$dest} += airtime($sel_sf, $cb, $overhead_d+$extra_bytes) * ($Prx_w + $Pidle_w) unless $lrfhss;
 			if ($nconfirmed{$dest} == 0){
 				# Any valid Class-A downlink stops remaining copies of the same FCntUp.
 				my $cancelled = remove_scheduled_uplink($dest, $uplink_seq);
@@ -811,23 +877,29 @@ while (1){
 			}
 			my $cb = $bw125;
 			$cb = $bw500 if ($fplan eq "US915");
+			unless ($lrfhss) {
 			$nconsumption{$dest} += (2-($preamble+4.25)*(2**$sf)/$cb)*$Pidle_w + ($preamble+4.25)*(2**$sf)/$cb * ($Prx_w + $Pidle_w);
 			$nconsumption{$dest} += ($preamble+4.25)*(2**$rx2sf)/$cb * ($Prx_w + $Pidle_w);
+			}
 		}
 		@{$overlaps{$sel}} = ();
 		if ($nconfirmed{$dest} == 1){
 			# plan next transmission
 			do{
 				$ch = $channels[rand @channels]; 
-			} while ($ch == $nlast_ch{$dest});
+			} while (($ch == $nlast_ch{$dest}) && @channels > 1);
 			my $extra_bytes = 0;
 			if ($nresponse{$dest} == 1){
 				$extra_bytes = $linkadr_ans;
 				$nresponse{$dest} = 0;
 			}
-			my $at = airtime($sf, $bw125, $npkt{$dest}+$extra_bytes);
+			my $at = uplink_airtime($sf, $npkt{$dest}+$extra_bytes);
 			my $new_start = $sel_sta - $rwindow + $nperiod{$dest} + rand(1);
 			$new_start = $sel_sta - $rwindow + 2 + 1 + rand(2) if ($failed == 1 && $new_trans == 0);
+			if ($lrfhss) {
+				$new_start = max($new_start, $sel_end + 0.001);
+				$new_start = max($new_start, $sel_sta-$rwindow + 2 + ($preamble+4.25)*(2**$rx2sf)/$window_bw) if $failed;
+			}
 			if ($fplan ne "US915"){
 				if ($new_start < $ndc{$dest}{$band{$ch}}){
 					print "# warning! transmission will be postponed due to duty cycle restrictions!\n" if ($debug == 1);
@@ -845,9 +917,9 @@ while (1){
 				last if ($sta > $new_start);
 				$i += 1;
 			}
-			splice(@{$sorted_t{$ch}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}]);
+			splice(@{$sorted_t{$ch}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}, undef, undef, undef, $npkt{$dest}+$extra_bytes, $nptx{$dest}]);
 			$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
-			$total_retrans += 1 if (($failed == 1) && ($new_start < $sim_time)); 
+			$total_retrans += 1 if (($failed == 1) && !$new_trans && ($new_start < $sim_time));
 			print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
 			$nconsumption{$dest} += $at * $Ptx_w[$nptx{$dest}] + $at * $Pidle_w if ($new_start < $sim_time);
 			$ndc{$dest}{$band{$ch}} = $new_end + $dutycycle*$at if ($fplan ne "US915");
@@ -878,7 +950,7 @@ printf "Confirmed Packet Delivery Ratio (unique) = %.5f\n", (sum values %nacked)
 printf "Packet Delivery Ratio = %.5f\n", (sum values %ndeliv)/(sum values %nunique); # total unique packets received / total unique packets transmitted
 printf "Packet Reception Ratio = %.5f\n", (sum values %appsuccess)/$total_trans; # total packets received / total packets transmitted
 my @fairs = ();
-foreach my $n (keys %ncoords){
+foreach my $n (sort {$a <=> $b} keys %ncoords){
 	if ($nconfirmed{$n} == 0){
 		push(@fairs, $ndeliv{$n}/$nunique{$n});
 	}
@@ -901,12 +973,11 @@ foreach my $g (@gw_ids){
 	}
 	printf "\t - Total duty cycle in RX2 channel: %.2f%%\n", $gtime{$g}{$rx2ch}*100/$sim_end;
 }
-if ($confirmed_perc > 0){
+if (scalar keys %ntotretr > 0){
 	@fairs = ();
 	my $avgretr = 0;
-	foreach my $n (keys %ncoords){
+	foreach my $n (sort {$a <=> $b} keys %ncoords){
 		next if ($nconfirmed{$n} == 0);
-		$nacked{$n} = 1 if ($nacked{$n} == 0);
 		push(@fairs, $nacked{$n}/$nunique{$n});
 		$avgretr += $ntotretr{$n}/$nunique{$n};
 	}
@@ -915,14 +986,124 @@ if ($confirmed_perc > 0){
 	printf "Stdev of retransmissions = %.3f\n", (stddev values %ntotretr);
 	print "-----\n";
 }
+if (!$lrfhss) {
 for (my $sf=7; $sf<=12; $sf+=1){
 	printf "# of nodes with SF%d: %d, Avg retransmissions: %.2f\n", $sf, $sf_distr[$sf-7], $sf_retrans{$sf}/$sf_distr[$sf-7] if ($sf_distr[$sf-7] > 0);
 }
 printf "Avg SF = %.3f\n", $avg_sf/(scalar keys %ncoords);
+} else {
+	print "Uplink modulation = LR-FHSS\n";
+	print "Frequency plan = $fplan\n";
+	print "LR-FHSS data rate = DR$lr_profile->{dr}\n";
+	print "LR-FHSS coding rate = $lr_profile->{cr_num}/3\n";
+	print "LR-FHSS header replicas = $lr_profile->{headers}\n";
+	my $stats = $lr_radio->stats;
+	print "LR-FHSS header observations = $stats->{headers}\n";
+	print "LR-FHSS lost header observations = $stats->{lost_headers}\n";
+	print "LR-FHSS fragment observations = $stats->{fragments}\n";
+	print "LR-FHSS lost fragment observations = $stats->{lost_fragments}\n";
+}
 # printf "Avg packet size = %.3f bytes\n", $avg_pkt/(scalar keys %ncoords); # includes overhead
 printf "Script execution time = %.4f secs\n", $finish_time - $start_time;
 generate_picture(1) if ($picture == 1); # 0=energy consumption map, 1=PRR map
 
+
+sub lr_rx_energy {
+	my ($rx1_sf, $window, $duration, $success) = @_;
+	my $rx1 = ($preamble+4.25) * (2**$rx1_sf) / $window_bw;
+	my $rx2 = ($preamble+4.25) * (2**$rx2sf) / $window_bw;
+	return 2*$Pidle_w + $rx1*$Prx_w + $rx2*($Prx_w+$Pidle_w) unless $window;
+	if ($window == 1) {
+		return $Pidle_w + $duration*($Prx_w+$Pidle_w) if $success;
+		return 2*$Pidle_w + $duration*$Prx_w + $rx2*($Prx_w+$Pidle_w);
+	}
+	return 2*$Pidle_w + $rx1*$Prx_w + $duration*($Prx_w+$Pidle_w);
+}
+
+sub uplink_airtime {
+	my ($sf, $bytes) = @_;
+	return $lrfhss ? LoRaWAN::LRFHSS::airtime($lr_profile, $bytes) : airtime($sf, $bw125, $bytes);
+}
+
+sub init_lrfhss_node {
+	my ($node) = @_;
+	# LR-FHSS reachability is evaluated at reception using its own sensitivity.
+	# An out-of-range node still transmits and contributes interference/statistics.
+	$npkt{$node} = $packet_size + $overhead_u;
+	return $lr_profile->{rx1sf};
+}
+
+sub lr_received_power {
+	my ($frame, $receiver) = @_;
+	my $sender = $frame->{sender};
+	my $from = exists $ncoords{$sender} ? $ncoords{$sender} : $gcoords{$sender};
+	my $to = exists $ncoords{$receiver} ? $ncoords{$receiver} : $gcoords{$receiver};
+	my $d = max(0.2, distance($from->[0], $to->[0], $from->[1], $to->[1]));
+	return $frame->{tx_power} - ($Lpld0 + 10*$gamma*log10($d/$dref)) - random_normal(1, 0, 1)*$var;
+}
+
+sub next_transmission {
+	# LoRa retains its packet-start collision model. LR-FHSS merges actual starts
+	# with radio completions, so later interference can erase individual hops
+	# before reception, ACK scheduling, or packet-delivery statistics are decided.
+	while (1) {
+		my ($min_ch, $min_t);
+		foreach my $ch (sort {$a <=> $b} keys %sorted_t) {
+			my $list = $sorted_t{$ch};
+			if ($lrfhss) {
+				@$list = grep { $_->[0] !~ /^[0-9]/ || $_->[1] < $sim_time } @$list;
+			}
+			if (!@$list) { delete $sorted_t{$ch}; next; }
+			my $t = $list->[0][1];
+			if (!defined($min_t) || $t < $min_t) { ($min_ch, $min_t) = ($ch, $t); }
+		}
+		if ($lrfhss) {
+			my $end = $lr_radio->next_end;
+			if (defined($end) && (!defined($min_t) || $end <= $min_t)) {
+				$lr_completed = $lr_radio->finish_frame;
+				return $lr_completed->{event};
+			}
+		}
+		return undef unless defined $min_ch;
+		my $event = shift @{$sorted_t{$min_ch}};
+		return $event unless $lrfhss;
+		my ($sender, $start, $end, $channel, $sf) = @$event;
+		my $frame = { event => $event, start => $start, end => $end, sf => $sf };
+		if ($sender =~ /^[0-9]/) {
+			my $bytes = $event->[9];
+			if (!$nconfirmed{$sender} && $nresponse{$sender}) {
+				$bytes += $linkadr_ans;
+				$nresponse{$sender} = 0;
+				print "# $sender includes LinkADRAns in FCntUp=$event->[5]\n" if $debug;
+			}
+			my $at = uplink_airtime($sf, $bytes);
+			# Power may have changed since this transmission was queued.
+			$nconsumption{$sender} += $at * ($Ptx_w[$nptx{$sender}] + $Pidle_w)
+				- ($end-$start) * ($Ptx_w[$event->[10]] + $Pidle_w);
+			$frame->{end} = $event->[2] = $start + $at;
+			$ndc{$sender}{$band{$channel}} = $frame->{end} + $dutycycle*$at if $fplan ne 'US915';
+			$frame->{sender} = $sender;
+			$frame->{tx_power} = $Ptx_l[$nptx{$sender}];
+			$frame->{profile} = $lr_profile;
+			$frame->{hops} = LoRaWAN::LRFHSS::hops($lr_profile, $bytes, $start, $channel);
+			$frame->{receivers} = [@gw_ids];
+			$frame->{sensitivity} = $lr_sensitivity;
+			printf "# LR-FHSS node %s FCntUp=%d DR%d start=%.6f end=%.6f channel=%d bytes=%d hops=%d\n",
+				$sender, $event->[5], $lr_profile->{dr}, $start, $frame->{end}, $channel, $bytes, scalar @{$frame->{hops}} if $debug;
+		} else {
+			$sender =~ s/[0-9].*//;
+			my ($dest) = map { $_->[0] } grep { $_->[1] == $start && $_->[4] == $channel } @{$gdest{$sender}};
+			die "Missing scheduled LR-FHSS downlink destination\n" unless defined $dest;
+			my $bw = $fplan eq 'US915' ? $bw500 : $bw125;
+			$frame->{sender} = $sender;
+			$frame->{tx_power} = $Ptx_gw;
+			$frame->{hops} = [{ start => $start, end => $end, frequency => $channel, bandwidth => $bw }];
+			$frame->{receivers} = [$dest];
+			$frame->{sensitivity} = $sensis[$sf-7][bwconv($bw)];
+		}
+		$lr_radio->start_frame($frame);
+	}
+}
 
 sub schedule_downlink{
 	my ($sel_gw, $sel, $sel_sf, $sel_ch, $sel_seq, $sel_end, $rwindow, $new_index, $new_nbtrans) = @_;
@@ -947,7 +1128,8 @@ sub schedule_downlink{
 	}
 	my $cb = $bw125;
 	$cb = $bw500 if ($fplan eq "US915");
-	my $airt = airtime($sel_sf, $cb, $overhead_d+$extra_bytes);
+	my $down_sf = ($lrfhss && $rwindow == 2) ? $rx2sf : $sel_sf;
+	my $airt = airtime($down_sf, $cb, $overhead_d+$extra_bytes);
 	my ($ack_sta, $ack_end) = ($sel_end+$rwindow, $sel_end+$rwindow+$airt);
 	$total_down_time += $airt;
 	print "# gw $sel_gw will transmit an ack (or commands) to $sel (RX$rwindow) (channel $sel_ch)\n" if ($debug == 1);
@@ -972,7 +1154,7 @@ sub schedule_downlink{
 	$gtime{$sel_gw}{$bnd} += $airt;
 	###
 	$appacked{$sel} += 1 if ($nconfirmed{$sel} == 1);
-	splice(@{$sorted_t{$sel_ch}}, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $sel_sf, $appacked{$sel}]);
+	splice(@{$sorted_t{$sel_ch}}, $i, 0, [$new_name, $ack_sta, $ack_end, $sel_ch, $down_sf, $appacked{$sel}]);
 	push (@{$gdest{$sel_gw}}, [$sel, $sel_end+$rwindow, $sel_sf, $rwindow, $sel_ch, $new_index, $new_nbtrans, $sel_seq]);
 }
 
@@ -990,7 +1172,7 @@ sub gs_policy{ # gateway selection policy
 	if ($win == 2){
 		$bnd = "54" if ($fplan ne "US915");
 		$sel_ch = $rx2ch;
-		if ($sel_sf < $rx2sf){
+		if (!$lrfhss && $sel_sf < $rx2sf){
 			@$gw_rc = @{$nreachablegws{$sel}};
 		}
 		$sel_sf = $rx2sf;
@@ -1009,7 +1191,7 @@ sub gs_policy{ # gateway selection policy
 				next;
 			}
 		}
-		my ($usta, $uend, $sf) = @{$gunavailability_u{$gw}{$sel_ch}};
+		my ($usta, $uend, $sf) = @{$gunavailability_u{$gw}{$sel_ch} || [-1, -1, 0]};
 		if ( (($ack_sta >= $usta) && ($ack_sta <= $uend)) || (($ack_end <= $uend) && ($ack_end >= $usta)) ){
 			$is_avail = 0;
 			last;
@@ -1034,7 +1216,7 @@ sub gs_policy{ # gateway selection policy
 	}
 	if ($policy == 5){ # FBS
 		my $avgfair = 0;
-		foreach my $n (keys %ncoords){
+		foreach my $n (sort {$a <=> $b} keys %ncoords){
 			next if ($appsuccess{$n} == 0);
 			$avgfair += $appacked{$n}/$appsuccess{$n};
 		}
@@ -1131,10 +1313,13 @@ sub nbtrans_policy{
 	return $target_nbtrans;
 }
 
-sub adr{ # SF is fixed by min_sf(); ADR adjusts TX power and may request NbTrans
+sub adr{ # Uplink PHY/rate stays fixed; ADR adjusts TX power and may request NbTrans
 	my ($sel, $sel_sf) = @_;
-	my $m_snr = (max @{$powers{$sel}});
-	my $mgap = $m_snr - $snrs[$sel_sf-7] - $margin;
+	# Average temporal fading; the strongest historical sample overstates margin.
+	my $m_snr = sum(@{$powers{$sel}}) / scalar(@{$powers{$sel}});
+	my $sensitivity = $lrfhss ? $lr_sensitivity : $gw_sensis[$sel_sf-7][bwconv($bw125)];
+	my $required_snr = $sensitivity - $noise;
+	my $mgap = $m_snr - $required_snr - $margin;
 	my $nstep = int($mgap/3);
 	my $old_index = $nptx{$sel};
 	my $new_index = $old_index;
@@ -1208,7 +1393,7 @@ sub schedule_unconfirmed_after_downlink{
 	my $seq = $nunique{$node};
 	$ndeliv_seq{$node}{$seq} = 1;
 	$nnbtrans_count{$node} = 1;
-	my $at = airtime($sf, $bw125, $npkt{$node}); # LinkADRAns, if pending, is added when this event executes.
+	my $at = uplink_airtime($sf, $npkt{$node}); # LinkADRAns, if pending, is added when this event executes.
 	my $new_end = $new_start + $at;
 	my $i = 0;
 	foreach my $el (@{$sorted_t{$ch}}){
@@ -1219,7 +1404,7 @@ sub schedule_unconfirmed_after_downlink{
 	my $scheduled_energy = $at * $Ptx_w[$nptx{$node}] + $at * $Pidle_w;
 	my $prev_dc = -1;
 	$prev_dc = $ndc{$node}{$band{$ch}} if ($fplan ne "US915");
-	splice(@{$sorted_t{$ch}}, $i, 0, [$node, $new_start, $new_end, $ch, $sf, $seq, $scheduled_energy, $prev_dc, 0]);
+	splice(@{$sorted_t{$ch}}, $i, 0, [$node, $new_start, $new_end, $ch, $sf, $seq, $scheduled_energy, $prev_dc, 0, $npkt{$node}, $nptx{$node}]);
 	$total_trans += 1;
 	$nconsumption{$node} += $scheduled_energy;
 	$ndc{$node}{$band{$ch}} = $new_end + $dutycycle*$at if ($fplan ne "US915");
@@ -1242,7 +1427,7 @@ sub node_col{ # handle node collisions
 		}
 		# check if the gw is available for uplink
 		my $is_available = 1;
-		my ($usta, $uend, $sf) = @{$gunavailability_u{$gw}{$sel_ch}};
+		my ($usta, $uend, $sf) = @{$gunavailability_u{$gw}{$sel_ch} || [-1, -1, 0]};
 		if ( (($sel_sta >= $usta) && ($sel_sta <= $uend)) || (($sel_end <= $uend) && ($sel_end >= $usta)) ){
 			$is_available = 0 if ($sf == $sel_sf);
 		}
@@ -1519,7 +1704,7 @@ sub read_data{
 		$nogwavail{$n} = 0;
 		if ($fixed_packet_rate == 0){
 			my @per = random_exponential(scalar keys @nodes, 2*$period); # other distributions may be used
-			foreach my $n (keys %ncoords){
+			foreach my $n (sort {$a <=> $b} keys %ncoords){
 				$nperiod{$n} = pop(@per);
 			}
 		}else{
@@ -1572,13 +1757,13 @@ sub read_data{
 	}
 	
 	# precompute nodes-gws distances/path-losses
-	foreach my $n (keys %ncoords){
+	foreach my $n (sort {$a <=> $b} keys %ncoords){
 		my ($nx, $ny) = @{$ncoords{$n}};
 		foreach my $g (keys %gcoords){
 			my ($gx, $gy) = @{$gcoords{$g}};
 			my $dx = $gx - $nx;
 			my $dy = $gy - $ny;
-			my $d  = sqrt($dx*$dx + $dy*$dy);
+			my $d  = max(0.2, sqrt($dx*$dx + $dy*$dy));
 			$dist_ng{$n}{$g} = $d;
 			$pl_ng{$n}{$g} = $Lpld0 + 10 * $gamma * log($d/$dref) / log(10);
 		}
@@ -1600,8 +1785,8 @@ sub generate_picture{
 	my $black = $im->colorAllocate(0,0,0);
 	my $red = $im->colorAllocate(255,0,0);
 	
-	my $max_ndeliv = (max values %ndeliv);
-	foreach my $n (keys %ncoords){
+	my $max_ndeliv = max(1, values %ndeliv);
+	foreach my $n (sort {$a <=> $b} keys %ncoords){
 		my ($x, $y) = @{$ncoords{$n}};
 		($x, $y) = (int(($x * $display_x)/$norm_x), int(($y * $display_y)/$norm_y));
 		my $color = $im->colorAllocate(255*$nconsumption{$n}/$max_cons,0,0);

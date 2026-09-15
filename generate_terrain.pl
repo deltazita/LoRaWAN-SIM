@@ -9,7 +9,12 @@
 use strict;
 use Math::Random;
 
-(@ARGV==3) || die "usage: $0 <terrain_side_size_(m)> <num_of_nodes> <num_of_gateways>\ne.g. $0 2000 500 2\n";
+(@ARGV==3 || @ARGV==4) || die "usage: $0 <terrain_side_size_(m)> <num_of_nodes> <num_of_gateways> [seed]\ne.g. $0 2000 500 2\n";
+
+if (@ARGV == 4) {
+	die "seed must be an integer\n" unless $ARGV[3] =~ /^-?\d+$/;
+	srand($ARGV[3]);
+}
 
 my $tx = $ARGV[0];
 my $nodes = $ARGV[1];
