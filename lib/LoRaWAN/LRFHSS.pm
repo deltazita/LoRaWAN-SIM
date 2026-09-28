@@ -120,21 +120,6 @@ sub next_end {
     return $self->{active}[0]{end};
 }
 
-sub receiver_busy {
-    my ($self, $receiver, $start, $end) = @_;
-    return 0 unless defined($start) && defined($end) && $start < $end;
-
-    for my $frame (@{$self->{active}}) {
-        # Downlinks list their destination as the receiver, whereas LR-FHSS
-        # uplinks list gateways.  This keeps gateway TX/RX occupancy local to
-        # the gateway without treating an unrelated downlink as reception.
-        next unless grep { $_ eq $receiver } @{$frame->{receivers}};
-        return 1 if max($start, $frame->{start})
-                 < min($end, $frame->{end}) - 1e-9;
-    }
-    return 0;
-}
-
 sub start_frame {
     my ($self, $frame) = @_;
     die "Non-chronological radio event\n" if $frame->{start} < $self->{now} - 1e-9;

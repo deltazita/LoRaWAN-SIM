@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                   v2026.9.27                                    #
+#                                   v2026.9.14                                    #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum                                                      #
@@ -1195,11 +1195,6 @@ sub gs_policy{ # gateway selection policy
 		if ( (($ack_sta >= $usta) && ($ack_sta <= $uend)) || (($ack_end <= $uend) && ($ack_end >= $usta)) ){
 			$is_avail = 0;
 			last;
-		}
-		# a gateway cannot transmit an ACK while another LR-FHSS uplink is still on air.
-		if ($lrfhss && $lr_radio->receiver_busy($gw, $ack_sta, $ack_end)){
-			$is_avail = 0;
-			next;
 		}
 		foreach my $gu (@{$gunavailability_d{$gw}}){
 			my ($sta, $end) = @$gu;
