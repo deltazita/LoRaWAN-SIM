@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                   v2026.9.14                                    #
+#                                   v2026.9.30                                    #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum                                                      #
@@ -399,6 +399,7 @@ my $packet_size = $configured_pkt_size; # default packet size if fixed_packet_si
 my $packet_size_distr = "normal"; # uniform / normal (applicable if fixed_packet_size=0)
 my $avg_pkt = 0; # actual average packet size
 my %sorted_t = (); # keys = channels, values = list of nodes
+my %pending_nbtrans = (); # queued NbTrans copies keyed by node and FCntUp
 my @recents = (); # used in auto_simtime
 my $auto_simtime = 0; # 1 = the simulation will automatically stop (useful when sim_time>>10000)
 my %sf_retrans = (); # number of retransmissions per SF
@@ -636,7 +637,8 @@ while (1){
 				}
 				$total_trans += 1 if ($sel_sta < $sim_time);
 				$total_retrans += 1 if (!$new_trans && $sel_sta < $sim_time);
-				splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}, undef, undef, undef, $npkt{$sel}, $nptx{$sel}]);
+				splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $nunique{$sel}, undef, undef, undef, $npkt{$sel}, $nptx{$sel}])
+					if (!$lrfhss || $sel_sta < $sim_time);
 				print "# $sel, new transmission at $sel_sta -> $sel_end\n" if ($debug == 1);
 				$nconsumption{$sel} += $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w if $sel_sta < $sim_time;
 				$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
@@ -698,8 +700,10 @@ while (1){
 				my $scheduled_energy = $at * $Ptx_w[$nptx{$sel}] + $at * $Pidle_w;
 				my $prev_dc = -1;
 				$prev_dc = $ndc{$sel}{$band{$sel_ch}} if ($fplan ne "US915");
-				# Tuple fields 6..8 support cancellation; 9..10 snapshot PHY bytes/TX power for LR-FHSS.
-				splice(@{$sorted_t{$sel_ch}}, $i, 0, [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $next_seq, $scheduled_energy, $prev_dc, $repeat_same_fcnt, $npkt{$sel}, $nptx{$sel}]);
+				# Tuple fields 6..8 support cancellation; 9..10 snapshot PHY bytes/TX power for LR-FHSS; 11 is a lazy-cancel marker.
+				my $event = [$sel, $sel_sta, $sel_end, $sel_ch, $sel_sf, $next_seq, $scheduled_energy, $prev_dc, $repeat_same_fcnt, $npkt{$sel}, $nptx{$sel}];
+				splice(@{$sorted_t{$sel_ch}}, $i, 0, $event);
+				index_pending_nbtrans($event);
 				$total_trans += 1;
 				$nconsumption{$sel} += $scheduled_energy;
 				$ndc{$sel}{$band{$sel_ch}} = $sel_end + $dutycycle*$at if ($fplan ne "US915");
@@ -917,7 +921,8 @@ while (1){
 				last if ($sta > $new_start);
 				$i += 1;
 			}
-			splice(@{$sorted_t{$ch}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}, undef, undef, undef, $npkt{$dest}+$extra_bytes, $nptx{$dest}]);
+			# Keep the post-downlink debug/accounting behavior unchanged, but avoid queuing an out-of-horizon LR-FHSS node retransmission
+			splice(@{$sorted_t{$ch}}, $i, 0, [$dest, $new_start, $new_end, $ch, $sf, $nunique{$dest}, undef, undef, undef, $npkt{$dest}+$extra_bytes, $nptx{$dest}]) if (!$lrfhss || $new_start < $sim_time);
 			$total_trans += 1 if ($new_start < $sim_time); # do not count transmissions that exceed the simulation time
 			$total_retrans += 1 if (($failed == 1) && !$new_trans && ($new_start < $sim_time));
 			print "# $dest, new transmission at $new_start -> $new_end\n" if ($debug == 1);
@@ -1027,8 +1032,6 @@ sub uplink_airtime {
 
 sub init_lrfhss_node {
 	my ($node) = @_;
-	# LR-FHSS reachability is evaluated at reception using its own sensitivity.
-	# An out-of-range node still transmits and contributes interference/statistics.
 	$npkt{$node} = $packet_size + $overhead_u;
 	return $lr_profile->{rx1sf};
 }
@@ -1050,9 +1053,9 @@ sub next_transmission {
 		my ($min_ch, $min_t);
 		foreach my $ch (sort {$a <=> $b} keys %sorted_t) {
 			my $list = $sorted_t{$ch};
-			if ($lrfhss) {
-				@$list = grep { $_->[0] !~ /^[0-9]/ || $_->[1] < $sim_time } @$list;
-			}
+			# Cancellation is lazy: discard cancelled events only when they
+			# reach the head of their sorted channel queue.
+			shift @$list while @$list && $list->[0][11];
 			if (!@$list) { delete $sorted_t{$ch}; next; }
 			my $t = $list->[0][1];
 			if (!defined($min_t) || $t < $min_t) { ($min_ch, $min_t) = ($ch, $t); }
@@ -1066,6 +1069,7 @@ sub next_transmission {
 		}
 		return undef unless defined $min_ch;
 		my $event = shift @{$sorted_t{$min_ch}};
+		unindex_pending_nbtrans($event);
 		return $event unless $lrfhss;
 		my ($sender, $start, $end, $channel, $sf) = @$event;
 		my $frame = { event => $event, start => $start, end => $end, sf => $sf };
@@ -1092,7 +1096,13 @@ sub next_transmission {
 				$sender, $event->[5], $lr_profile->{dr}, $start, $frame->{end}, $channel, $bytes, scalar @{$frame->{hops}} if $debug;
 		} else {
 			$sender =~ s/[0-9].*//;
-			my ($dest) = map { $_->[0] } grep { $_->[1] == $start && $_->[4] == $channel } @{$gdest{$sender}};
+			my $dest;
+			foreach my $destination (@{$gdest{$sender}}){
+				if ($destination->[1] == $start && $destination->[4] == $channel){
+					$dest = $destination->[0];
+					last;
+				}
+			}
 			die "Missing scheduled LR-FHSS downlink destination\n" unless defined $dest;
 			my $bw = $fplan eq 'US915' ? $bw500 : $bw125;
 			$frame->{sender} = $sender;
@@ -1252,8 +1262,7 @@ sub record_uplink_fcnt{
 	my ($sel, $fcnt) = @_;
 	my $hist = $nuplink_fcnt_history{$sel};
 
-	# ChirpStack ignores re-transmissions / repeated NbTrans copies carrying
-	# the same FCntUp as the latest ADR-history entry.
+	# ChirpStack ignores re-transmissions / repeated NbTrans copies carrying the same FCntUp as the latest ADR-history entry.
 	if ((defined $hist) && (scalar @$hist > 0) && ($hist->[-1] == $fcnt)){
 		return;
 	}
@@ -1346,30 +1355,43 @@ sub adr{ # Uplink PHY/rate stays fixed; ADR adjusts TX power and may request NbT
 	return ($new_ptx, $new_index, $new_nbtrans);
 }
 
+sub index_pending_nbtrans{
+	my ($event) = @_;
+	return unless defined($event->[8]) && $event->[8] == 1;
+	$pending_nbtrans{$event->[0]}{$event->[5]}{$event} = $event;
+}
+
+sub unindex_pending_nbtrans{
+	my ($event) = @_;
+	return unless ref($event) eq 'ARRAY';
+	return unless defined($event->[8]) && $event->[8] == 1;
+	my $by_seq = $pending_nbtrans{$event->[0]} || {};
+	my $by_event = $by_seq->{$event->[5]} || {};
+	delete $by_event->{$event};
+	delete $by_seq->{$event->[5]} unless keys %$by_event;
+}
+
 sub remove_scheduled_uplink{
 	my ($node, $seq) = @_;
 	return 0 if !defined $seq;
+	my $by_seq = $pending_nbtrans{$node} || {};
+	my $by_event = delete $by_seq->{$seq};
+	return 0 unless $by_event && keys %$by_event;
+	delete $pending_nbtrans{$node} unless keys %$by_seq;
+
 	my $removed = 0;
-	foreach my $channel (keys %sorted_t){
-		my @keep = ();
-		foreach my $event (@{$sorted_t{$channel}}){
-			my ($n, $sta, $end, $ch, $sf, $event_seq, $scheduled_energy, $prev_dc, $is_nbtrans_copy) = @$event;
-			if (($n =~ /^[0-9]/) && ($n == $node) && ($event_seq == $seq)){
-				$removed += 1;
-				$total_trans -= 1;
-				$nconsumption{$node} -= $scheduled_energy if defined $scheduled_energy;
-				if (($fplan ne "US915") && defined $prev_dc){
-					$ndc{$node}{$band{$channel}} = $prev_dc;
-				}
-				if (defined $is_nbtrans_copy && $is_nbtrans_copy == 1){
-					$total_nbtrans_repetitions -= 1 if ($total_nbtrans_repetitions > 0);
-				}
-				print "# cancelling pending NbTrans copy of node $node FCntUp=$seq after valid downlink\n" if ($debug == 1);
-				next;
-			}
-			push @keep, $event;
+	foreach my $event (values %$by_event){
+		# Keep the event reference in its channel queue, but mark it so the queue head cleanup can discard it without scanning the queue now.
+		$event->[11] = 1;
+		my ($channel, $scheduled_energy, $prev_dc) = ($event->[3], $event->[6], $event->[7]);
+		$removed += 1;
+		$total_trans -= 1;
+		$nconsumption{$node} -= $scheduled_energy if defined $scheduled_energy;
+		if (($fplan ne "US915") && defined $prev_dc){
+			$ndc{$node}{$band{$channel}} = $prev_dc;
 		}
-		@{$sorted_t{$channel}} = @keep;
+		$total_nbtrans_repetitions -= 1 if $total_nbtrans_repetitions > 0;
+		print "# cancelling pending NbTrans copy of node $node FCntUp=$seq after valid downlink\n" if ($debug == 1);
 	}
 	$nnbtrans_count{$node} = 1 if ($removed > 0);
 	return $removed;
