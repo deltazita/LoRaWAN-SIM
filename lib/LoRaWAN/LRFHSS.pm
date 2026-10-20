@@ -120,10 +120,50 @@ sub next_end {
     return $self->{active}[0]{end};
 }
 
+# Actual hop bounds also support custom hop lists and LoRa downlinks.
+# A regular FHSS lattice allows disjoint grids to be rejected cheaply.
+sub _spectrum {
+    my ($frame) = @_;
+    my $hops = $frame->{hops};
+    my ($low, $high);
+    my $step = $frame->{profile} ? ($frame->{profile}{grids} || 0) * 488.28125 : 0;
+    my ($origin, $width) = @$hops ? @{$hops->[0]}{qw(frequency bandwidth)} : (0, 0);
+    my $lattice = $step > 0;
+    for my $hop (@$hops) {
+        my ($f, $w) = @{$hop}{qw(frequency bandwidth)};
+        $low = $f-$w/2 if !defined($low) || $f-$w/2 < $low;
+        $high = $f+$w/2 if !defined($high) || $f+$w/2 > $high;
+        if ($lattice) {
+            my $slots = ($f-$origin)/$step;
+            my $nearest = $slots < 0 ? int($slots-.5) : int($slots+.5);
+            $lattice = 0 if $w != $width || abs($slots-$nearest)*$step > 1e-6;
+        }
+    }
+    $step = 0 unless $lattice;
+    $frame->{spectrum} = [$low, $high, $step, $origin, $width];
+    $frame->{receiver_set} = {map { $_ => 1 } @{$frame->{receivers}}};
+}
+
+sub _spectrally_disjoint {
+    my ($a, $b) = @_;
+    my ($as, $bs) = ($a->{spectrum}, $b->{spectrum});
+    return 1 unless defined($as->[0]) && defined($bs->[0]);
+    return 1 if $as->[1] <= $bs->[0] || $bs->[1] <= $as->[0];
+    if ($as->[2] && $as->[2] == $bs->[2]) {
+        my $separation = abs($as->[3]-$bs->[3]);
+        $separation -= int($separation/$as->[2])*$as->[2];
+        $separation = $as->[2]-$separation if $separation > $as->[2]/2;
+        # Keep floating-point boundary cases on the full collision path.
+        return 1 if $separation > ($as->[4]+$bs->[4])/2 + 1e-5;
+    }
+    return 0;
+}
+
 sub start_frame {
     my ($self, $frame) = @_;
     die "Non-chronological radio event\n" if $frame->{start} < $self->{now} - 1e-9;
     $self->{now} = $frame->{start};
+    _spectrum($frame);
     $frame->{lost} = {};
     $frame->{powers} = {};
     for my $receiver (@{$frame->{receivers}}) {
@@ -136,11 +176,33 @@ sub start_frame {
     # Only frames that really started enter this model. Future cancelled NbTrans
     # copies cannot cause interference. Pairwise results are saved on both frames.
     for my $other (@{$self->{active}}) {
+        if (_spectrally_disjoint($frame, $other)) {
+            $self->_deafen($frame, $other);
+            next;
+        }
         $self->_interfere($frame, $other);
     }
     my $i = 0;
     ++$i while $i < @{$self->{active}} && $self->{active}[$i]{end} <= $frame->{end};
     splice @{$self->{active}}, $i, 0, $frame;
+}
+
+# Disjoint spectra can still make a transmitting receiver deaf. Preserve the
+# exact overlapping hop erasures without spectral calculations or receiver scans.
+sub _deafen {
+    my ($self, $a, $b) = @_;
+    my $a_deaf = $a->{receiver_set}{$b->{sender}};
+    my $b_deaf = $b->{receiver_set}{$a->{sender}};
+    return unless $a_deaf || $b_deaf;
+    my ($i, $j) = (0, 0);
+    while ($i < @{$a->{hops}} && $j < @{$b->{hops}}) {
+        my ($ah, $bh) = ($a->{hops}[$i], $b->{hops}[$j]);
+        if (max($ah->{start}, $bh->{start}) < min($ah->{end}, $bh->{end}) - 1e-9) {
+            $a->{lost}{$b->{sender}}{$i} = 1 if $a_deaf;
+            $b->{lost}{$a->{sender}}{$j} = 1 if $b_deaf;
+        }
+        if ($ah->{end} <= $bh->{end}) { ++$i } else { ++$j }
+    }
 }
 
 sub _power {

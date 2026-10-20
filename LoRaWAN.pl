@@ -2,14 +2,14 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                   v2026.9.30                                    #
+#                                   v2026.10.20                                   #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum                                                      #
 # -- Multiple half-duplex gateways                                                #
 # -- 1% radio duty cycle per band for the nodes (EU868)                           #
 # -- 1 or 10% radio duty cycle for the gateways (EU868)                           #
-# -- Acks with two receive windows (RX1, RX2)                                     #
+# -- ACKs with two receive windows (RX1, RX2)                                     #
 # -- LR-FHSS uplinks (header replicas, hopping, coded fragment recovery)          #
 # -- Non-orthogonal SF transmissions                                              #
 # -- Periodic or non-periodic (exponential) transmission rate                     #
@@ -38,10 +38,13 @@ use Math::Random qw(random_uniform random_exponential random_normal);
 use GD::SVG;
 use Statistics::Basic qw(:all);
 use JSON::PP qw(decode_json);
+use Getopt::Long ();
 use File::Basename qw(dirname);
 use File::Path qw(make_path);
 use File::Spec;
 use Cwd qw(abs_path);
+use Digest::SHA qw(sha256);
+require "$Bin/generate_terrain.pl";
 
 my @CONFIG_KEYS = (
 	"packets_per_hour",
@@ -80,10 +83,21 @@ my %CONFIG_ALIASES = (
 );
 
 sub usage {
-	return "usage: $0 <packets_per_hour> <simulation_time_(hours)> <terrain_file!>\n" .
-		   "   or: $0 --json <config.json>\n" .
-		   "   or: $0 <config.json>\n" .
-		   "   or: $0 <packets_per_hour> <simulation_time> <nodes> <gateways> <terrain_side> <number_of_bands> <rx2sf> <with_ack> <max_retr> <pkt_size> <adr> <double_gws> [nbtrans]\n";
+	return "usage: $0 <packets_per_hour> <simulation_time_(hours)> <terrain_file!> [options]\n" .
+		   "   or: $0 --json <config.json> [options]\n" .
+		   "   or: $0 <config.json> [options]\n" .
+		   "   or: $0 <packets_per_hour> <simulation_time> <nodes> <gateways> <terrain_side> <number_of_bands> <rx2sf> <with_ack> <max_retr> <pkt_size> <adr> <double_gws> [nbtrans] [options]\n" .
+		   "Options (override JSON values):\n" .
+		   "  --fhss                              Enable LR-FHSS uplinks (default: LoRa)\n" .
+		   "  --frequency-plan EU868|US915         Region (default: EU868; --region alias)\n" .
+		   "  --environment legacy|oulu|bonn      Propagation/shadowing profile (default: legacy)\n" .
+		   "  --no-rayleigh                       Disable Rayleigh fading (enabled by default)\n" .
+		   "  --lrfhss-dr N                       EU868: 8..11 (default 8); US915: 5..6 (default 5)\n" .
+		   "  --lrfhss-sensitivity-dbm N           Receiver threshold in dBm\n" .
+		   "  --lrfhss-capture-db N                Capture threshold in dB (default: 6)\n" .
+		   "  --seed N                            Reproducible random seed\n" .
+		   "  --picture 0|1                       SVG output (default: 1)\n" .
+		   "  --help                              Show this help\n";
 }
 
 sub canonicalize_config {
@@ -114,32 +128,54 @@ sub read_json_config {
 
 sub parse_simulator_config {
 	my @args = @_;
-	die usage() if (scalar @args == 0);
+	my (%overrides, $json_file, $fhss, $help);
+	# Recognize only long options, leaving negative positional values to the
+	# existing validators. A private parser avoids changing the terrain CLI.
+	my $parser = Getopt::Long::Parser->new(config => [
+		'permute', 'no_auto_abbrev', 'no_ignore_case', 'prefix_pattern=(--)'
+	]);
+	my @options = (
+		'json|config=s' => \$json_file,
+		'fhss' => \$fhss,
+		'no-rayleigh' => sub { $overrides{rayleigh_fading} = 0; },
+		'help' => \$help,
+	);
+	for my $key (qw(frequency_plan environment lrfhss_dr lrfhss_sensitivity_dbm lrfhss_capture_db seed picture)) {
+		my $option = $key;
+		$option =~ s/_/-/g;
+		$option .= '|region' if $key eq 'frequency_plan';
+		# Keep raw values so command-line and JSON input share validation.
+		push @options, "$option=s" => sub { $overrides{$key} = $_[1]; };
+	}
+	$parser->getoptionsfromarray(\@args, @options) or die usage();
+	if ($help) {
+		print usage();
+		exit 0;
+	}
+	$overrides{uplink_modulation} = 'LRFHSS' if $fhss;
 
-	if ((scalar @args == 2) && (($args[0] eq "--json") || ($args[0] eq "--config"))) {
-		return read_json_config($args[1]);
-	}
-	if ((scalar @args == 1) && ($args[0] =~ /\.json$/i)) {
-		return read_json_config($args[0]);
-	}
-	if (scalar @args == 3) {
-		return (
+	my %cfg;
+	if (defined $json_file) {
+		die usage() if @args;
+		%cfg = read_json_config($json_file);
+	} elsif ((scalar @args == 1) && ($args[0] =~ /\.json$/i)) {
+		%cfg = read_json_config($args[0]);
+	} elsif (scalar @args == 3) {
+		%cfg = (
 			"packets_per_hour" => $args[0],
 			"simulation_time" => $args[1],
 			"terrain_file" => $args[2],
 		);
-	}
-	if ((scalar @args == scalar @CONFIG_KEYS) || (scalar @args == scalar @CONFIG_KEYS + 1)) {
-		my %cfg = ();
+	} elsif ((scalar @args == scalar @CONFIG_KEYS) || (scalar @args == scalar @CONFIG_KEYS + 1)) {
 		for (my $i = 0; $i < scalar @CONFIG_KEYS; $i += 1) {
 			$cfg{$CONFIG_KEYS[$i]} = $args[$i];
 		}
 		# Optional 13th positional parameter, kept optional for backward compatibility.
 		$cfg{"nbtrans"} = $args[-1] if (scalar @args == scalar @CONFIG_KEYS + 1);
-		return %cfg;
+	} else {
+		die usage();
 	}
-
-	die usage();
+	return (%cfg, %overrides);
 }
 
 sub config_value {
@@ -199,6 +235,15 @@ sub generate_terrain_from_config {
 
 	my @generator_args = ($side, $nodes, $gateways);
 	push @generator_args, as_int($cfg_ref->{seed}, "seed") if exists $cfg_ref->{seed};
+	push @generator_args, '--frequency-plan', $cfg_ref->{frequency_plan} // 'EU868',
+		'--coverage-margin-db', $cfg_ref->{coverage_margin_db} // 10;
+	push @generator_args, '--environment', $cfg_ref->{environment} if exists $cfg_ref->{environment};
+	my $terrain_modulation = $cfg_ref->{uplink_modulation} // 'LoRa';
+	$terrain_modulation =~ s/[-_]//g;
+	push @generator_args, '--fhss' if $terrain_modulation eq 'LRFHSS';
+	for my $setting (['lrfhss_dr', '--lrfhss-dr'], ['lrfhss_sensitivity_dbm', '--lrfhss-sensitivity-dbm']) {
+		push @generator_args, $setting->[1], $cfg_ref->{$setting->[0]} if exists $cfg_ref->{$setting->[0]};
+	}
 	open(my $gen_fh, "-|", "perl", $generator, @generator_args)
 		or die "Error: could not execute $generator\n";
 	open(my $out_fh, ">", $terrain_file)
@@ -227,7 +272,7 @@ my $configured_double_gws = as_int(config_value(\%CONFIG, "double_gws", 0), "dou
 my $configured_nbtrans = as_int(config_value(\%CONFIG, "nbtrans", 1), "nbtrans"); # initial NbTrans; ChirpStack ADR subsequently adapts it in the range 1..3
 my $fplan = uc(config_value(\%CONFIG, "frequency_plan", "EU868"));
 die "frequency_plan must be EU868 or US915\n" unless $fplan eq 'EU868' || $fplan eq 'US915';
-my $modulation = config_value(\%CONFIG, "uplink_modulation", "LoRa"); # leave LoRa as the default modulation. FHSS can only be used via a json configuration file
+my $modulation = config_value(\%CONFIG, "uplink_modulation", "LoRa"); # LoRa remains the default for every input form.
 $modulation =~ s/[-_]//g;
 die "uplink_modulation must be LoRa or LRFHSS\n" unless $modulation eq 'LoRa' || $modulation eq 'LRFHSS';
 my $lrfhss = $modulation eq 'LRFHSS';
@@ -249,6 +294,11 @@ if ($lrfhss) {
 my $lr_sensitivity = as_number(config_value(\%CONFIG, "lrfhss_sensitivity_dbm", $lrfhss && $lr_profile->{cr_num} == 2 ? -134 : -137), "lrfhss_sensitivity_dbm");
 my $lr_capture = as_number(config_value(\%CONFIG, "lrfhss_capture_db", 6), "lrfhss_capture_db");
 die "lrfhss_capture_db must be nonnegative\n" if $lr_capture < 0;
+my $rayleigh_fading = as_int(config_value(\%CONFIG, 'rayleigh_fading', 1), 'rayleigh_fading');
+die "rayleigh_fading must be 0 or 1\n" unless $rayleigh_fading == 0 || $rayleigh_fading == 1;
+my $coverage_radio = terrain_radio_parameters(\%CONFIG);
+my $fading_seed = exists $CONFIG{seed} ? as_int($CONFIG{seed}, 'seed') : (int(time*1000000) ^ $$);
+my %fading_cache;
 if (exists $CONFIG{seed}) {
 	my $seed = as_int($CONFIG{seed}, "seed");
 	srand($seed);
@@ -308,9 +358,9 @@ my %gtime = (); # gateway downlink time per band or channel
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW (SX1262)
 my @gw_sensis = ([7,-127,-122,-116], [8,-129,-125,-119], [9,-132.5,-128,-122], [10,-135.5,-130,-125], [11,-138,-132,-128], [12,-141,-135,-129]); # SX1302/3 for BW125
 my @thresholds = ([1,-8,-9,-9,-9,-9], [-11,1,-11,-12,-13,-13], [-15,-13,1,-13,-14,-15], [-19,-18,-17,1,-17,-18], [-22,-22,-21,-20,1,-20], [-25,-25,-25,-24,-23,1]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
-my $margin = 5;
-my $var = 3.57; # variance
-my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
+my $margin = $coverage_radio->{margin_db};
+my $var = $coverage_radio->{shadowing_db}; # shadowing standard deviation (dB), not variance
+my ($dref, $Lpld0, $gamma) = @{$coverage_radio}{qw(dref loss_db gamma)};
 my $noise = -90; # noise level for snr calculation
 my $bw125 = 125000; # channel bandwidth
 my $cr = 1; # Coding Rate
@@ -428,6 +478,7 @@ my %pl_ng; # path-loss (without shadowing) per node-gw pair
 my %dist_ng; # node-gw distance 
 
 read_data(); # read terrain file
+validate_coverage();
 my $lr_radio = $lrfhss ? LoRaWAN::LRFHSS->new(
 	power => \&lr_received_power,
 	capture => sub {
@@ -758,7 +809,7 @@ while (1){
 		my $G = random_normal(1, 0, 1);
 		my $d = $dist_ng{$dest}{$sel};
 		my $Xs  = $G * $var;
-		my $prx = $Ptx_gw - $pl_ng{$dest}{$sel} - $Xs;
+		my $prx = $Ptx_gw - $pl_ng{$dest}{$sel} - $Xs + fading_gain($sel, $dest, $sel_sta, $sel_seq);
 		my $cb = $bw125;
 		$cb = $bw500 if ($fplan eq "US915");
 		if ($prx < $sensis[$sel_sf-7][bwconv($cb)]){
@@ -772,13 +823,13 @@ while (1){
 			$n =~ s/[0-9].*// if ($n =~ /^[A-Z]/);
 			next if (($n eq $sel) || ($end < $sel_sta)); # skip non-overlapping transmissions
 			if ( (($sel_sta >= $sta) && ($sel_sta <= $end)) || (($sel_end <= $end) && ($sel_end >= $sta)) || (($sel_sta == $sta) && ($sel_end == $end)) ){
-				push(@{$overlaps{$sel}}, [$n, $G, $sf_]); # put in here all overlapping transmissions
-				push(@{$overlaps{$n}}, [$sel, $G, $sel_sf]); # check future possible collisions with those transmissions
+				push(@{$overlaps{$sel}}, [$n, $G, $sf_, $sta, $seq]); # retain the interferer's transmission identity
+				push(@{$overlaps{$n}}, [$sel, $G, $sel_sf, $sel_sta, $sel_seq]);
 			}
 		}
 		my %examined = ();
 		foreach my $ng (@{$overlaps{$sel}}){
-			my ($n, $G_, $sf_) = @$ng;
+			my ($n, $G_, $sf_, $interferer_start, $interferer_seq) = @$ng;
 			next if (exists $examined{$n});
 			$examined{$n} = 1;
 			my $overlap = 1;
@@ -792,11 +843,12 @@ while (1){
 			my $prx_ = 0;
 			if ($n =~ /^[0-9]/){
 				# there is no precomputed dist/path-loss for node-to-node
-				$d_ = distance($ncoords{$dest}[0], $ncoords{$n}[0], $ncoords{$dest}[1], $ncoords{$n}[1]);
+				$d_ = max(0.2, distance($ncoords{$dest}[0], $ncoords{$n}[0], $ncoords{$dest}[1], $ncoords{$n}[1]));
 				$prx_ = $Ptx_l[$nptx{$n}] - ($Lpld0 + 10*$gamma * log10($d_/$dref)) - $G_*$var;
 			}else{
 				$prx_ = $Ptx_gw - $pl_ng{$dest}{$n} - $G_*$var;
 			}
+			$prx_ += fading_gain($n, $dest, $interferer_start, $interferer_seq);
 			if ($overlap == 3){
 				if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
 					$failed = 1;
@@ -1036,13 +1088,32 @@ sub init_lrfhss_node {
 	return $lr_profile->{rx1sf};
 }
 
+# A unit-mean exponential power gain has a Rayleigh-distributed envelope
+sub rayleigh_gain_db {
+	my ($seed, $sender, $receiver, $start, $seq) = @_;
+	die "Rayleigh fading requires a transmission and receiver identity\n" unless defined($seed) && defined($sender) && defined($receiver) && defined($start) && defined($seq);
+	my $key = join('|', 'rayleigh', $seed, $sender, $receiver, sprintf('%.17g', $start), $seq);
+	my $u = (unpack('N', substr(sha256($key), 0, 4)) + 0.5) / 4294967296;
+	return 10 * log(-log($u)) / log(10);
+}
+
+sub fading_gain {
+	return 0 unless $rayleigh_fading;
+	my ($sender, $receiver, $start, $seq) = @_;
+	my $key = join('|', $sender, $receiver, sprintf('%.17g', $start), $seq);
+	return $fading_cache{$key} if exists $fading_cache{$key};
+	%fading_cache = () if keys(%fading_cache) >= 100000;
+	return $fading_cache{$key} = rayleigh_gain_db($fading_seed, $sender, $receiver, $start, $seq);
+}
+
 sub lr_received_power {
 	my ($frame, $receiver) = @_;
 	my $sender = $frame->{sender};
 	my $from = exists $ncoords{$sender} ? $ncoords{$sender} : $gcoords{$sender};
 	my $to = exists $ncoords{$receiver} ? $ncoords{$receiver} : $gcoords{$receiver};
 	my $d = max(0.2, distance($from->[0], $to->[0], $from->[1], $to->[1]));
-	return $frame->{tx_power} - ($Lpld0 + 10*$gamma*log10($d/$dref)) - random_normal(1, 0, 1)*$var;
+	return $frame->{tx_power} - ($Lpld0 + 10*$gamma*log10($d/$dref)) - random_normal(1, 0, 1)*$var
+		+ fading_gain($sender, $receiver, $frame->{start}, $frame->{event}[5]);
 }
 
 sub next_transmission {
@@ -1441,7 +1512,7 @@ sub node_col{ # handle node collisions
 		next if (exists $surpressed{$sel}{$gw}{$sel_seq});
 		my $d = $dist_ng{$sel}{$gw};
 		my $G = random_normal(1, 0, 1);
-		my $prx = $Ptx_l[$nptx{$sel}] - $pl_ng{$sel}{$gw} - $G*$var;
+		my $prx = $Ptx_l[$nptx{$sel}] - $pl_ng{$sel}{$gw} - $G*$var + fading_gain($sel, $gw, $sel_sta, $sel_seq);
 		if ($prx < $gw_sensis[$sel_sf-7][bwconv($bw125)]){
 			$surpressed{$sel}{$gw}{$sel_seq} = 1;
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
@@ -1483,7 +1554,8 @@ sub node_col{ # handle node collisions
 				}
 				# power 
 				$d = $dist_ng{$n}{$gw};
-				my $prx_ = $Ptx_l[$nptx{$n}] - $pl_ng{$n}{$gw} - random_normal(1, 0, 1)*$var;
+				my $prx_ = $Ptx_l[$nptx{$n}] - $pl_ng{$n}{$gw} - random_normal(1, 0, 1)*$var
+					+ fading_gain($n, $gw, $sta, $seq);
 				if ($overlap == 3){
 					if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf-7]) ){ # both collide
 						$surpressed{$sel}{$gw}{$sel_seq} = 1;
@@ -1531,12 +1603,12 @@ sub node_col{ # handle node collisions
 						}
 					}
 					if ($already_there == 0){
-						push(@{$overlaps{$sel}}, [$n, $G_, $sf]); # put in here all overlapping transmissions
+						push(@{$overlaps{$sel}}, [$n, $G_, $sf, $sta, $seq]);
 					}
-					push(@{$overlaps{$nn}}, [$sel, $G, $sel_sf]); # check future possible collisions with those transmissions
+					push(@{$overlaps{$nn}}, [$sel, $G, $sel_sf, $sel_sta, $sel_seq]);
 				}
 				foreach my $ng (@{$overlaps{$sel}}){
-					my ($n, $G_, $sf_) = @$ng;
+					my ($n, $G_, $sf_, $interferer_start, $interferer_seq) = @$ng;
 					my $overlap = 1;
 					# SF
 					if ($sf_ == $sel_sf){
@@ -1545,7 +1617,8 @@ sub node_col{ # handle node collisions
 					# power 
 					my $d_ = distance($gcoords{$gw}[0], $gcoords{$n}[0], $gcoords{$gw}[1], $gcoords{$n}[1]); # no precomputation here
 					$d_ = 0.2 if ($d_ == 0);
-					my $prx_ = $Ptx_gw - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
+					my $prx_ = $Ptx_gw - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var)
+						+ fading_gain($n, $gw, $interferer_start, $interferer_seq);
 					if ($overlap == 3){
 						if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
 							$surpressed{$sel}{$gw}{$sel_seq} = 1;
@@ -1623,9 +1696,7 @@ sub min_sf{
 		}
 	}
 	if ($sf == 13){
-		print "node $n unreachable!\n";
-		print "terrain too large?\n";
-		exit;
+		die "ED $n has no nominally reachable gateway; reduce terrain size or add gateways\n";
 	}
 	if ($fixed_packet_size == 0){
 		if ($packet_size_distr eq "uniform"){
@@ -1700,6 +1771,7 @@ sub read_data{
 		}
 	}
 	close(FH);
+	die "Terrain must contain at least one ED and one gateway\n" unless @nodes && @gateways;
 	
 	my $conf_num = int($confirmed_perc * (scalar @nodes));
 	foreach my $node (@nodes){
@@ -1792,6 +1864,22 @@ sub read_data{
 	}
 	# let's use this one for gw iterations (instead of %gcoords)
 	@gw_ids = sort { $a cmp $b } keys %gcoords;
+}
+
+# can all devices reach at least one gw?
+sub validate_coverage {
+	my @uncovered;
+	for my $node (sort {$a <=> $b} keys %ncoords) {
+		my $reachable = 0;
+		for my $gw (@gw_ids) {
+			if ($Ptx_l[$nptx{$node}] - $pl_ng{$node}{$gw} - $margin > $coverage_radio->{sensitivity_dbm}) {
+				$reachable = 1; last;
+			}
+		}
+		push @uncovered, $node unless $reachable;
+	}
+	die "Uncovered EDs for $fplan $modulation (nominal link budget, margin ${margin}dB): " .
+		join(', ', @uncovered) . ". Reduce terrain size, change PHY or add gateways.\n" if @uncovered;
 }
 
 sub distance {

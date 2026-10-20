@@ -9,6 +9,7 @@ LICENSED UNDER GPL v2
 import argparse
 import itertools
 import json
+import math
 import re
 import tempfile
 import subprocess
@@ -112,7 +113,7 @@ FRIENDLY_PARAMETER_NAMES = {
 }
 
 VERBOSE = False
-SIM_CACHE: Dict[Tuple[int, ...], Dict[str, Any]] = {}
+SIM_CACHE: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
 MODEL_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
@@ -142,8 +143,8 @@ def canonical_param_name(param: str) -> str:
     return ALIASES_TO_CANONICAL.get(param, param)
 
 
-def normalize_config(config: Dict[str, Any]) -> Dict[str, int]:
-    """Normalize a user configuration to the canonical integer-valued form."""
+def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize model inputs and retain simulator-only channel controls."""
     normalized = dict(config)
 
     for alias, canonical in ALIASES_TO_CANONICAL.items():
@@ -153,7 +154,7 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, int]:
     for key, value in DEFAULT_CONFIG.items():
         normalized.setdefault(key, value)
 
-    out: Dict[str, int] = {}
+    out: Dict[str, Any] = {}
     for key in CANONICAL_KEYS:
         if key not in normalized:
             raise ValueError(f"Missing required config key: {key}")
@@ -165,19 +166,42 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, int]:
     out["confirmed"] = out["with_ack"]
     out["num_bands"] = out["number_of_bands"]
     out["packet_size"] = out["pkt_size"]
+    # Simulator controls are passed through without changing trained ML features.
+    environment = str(normalized.get("environment", "legacy")).lower()
+    if environment not in ("legacy", "oulu", "bonn"):
+        raise ValueError("environment must be legacy, oulu or bonn")
+    out["environment"] = environment
+    fading = normalized.get("rayleigh_fading", 1)
+    if float(fading) not in (0, 1):
+        raise ValueError("rayleigh_fading must be 0 or 1")
+    out["rayleigh_fading"] = int(fading)
+    margin = float(normalized.get("coverage_margin_db", 10))
+    if not math.isfinite(margin) or margin < 0:
+        raise ValueError("coverage_margin_db must be finite and nonnegative")
+    out["coverage_margin_db"] = margin
+    if "seed" in normalized:
+        seed = int(normalized["seed"])
+        if float(normalized["seed"]) != seed:
+            raise ValueError("seed must be an integer")
+        out["seed"] = seed
     return out
 
 
-def config_cache_key(config: Dict[str, Any]) -> Tuple[int, ...]:
+def config_cache_key(config: Dict[str, Any]) -> Tuple[Any, ...]:
     """Build a stable cache key for a normalized configuration."""
     cfg = normalize_config(config)
-    return tuple(cfg[key] for key in CANONICAL_KEYS)
+    return tuple(cfg[key] for key in CANONICAL_KEYS) + (
+        cfg["rayleigh_fading"], cfg["coverage_margin_db"], cfg.get("seed"), cfg["environment"])
 
 
-def perl_json_from_config(config: Dict[str, Any]) -> Dict[str, int]:
+def perl_json_from_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Build the JSON object expected by the JSON-capable Perl simulator."""
     cfg = normalize_config(config)
-    return {key: int(cfg[key]) for key in CANONICAL_KEYS}
+    result = {key: int(cfg[key]) for key in CANONICAL_KEYS}
+    for key in ("rayleigh_fading", "coverage_margin_db", "seed", "environment"):
+        if key in cfg:
+            result[key] = cfg[key]
+    return result
 
 
 def write_perl_json_config(config: Dict[str, Any], directory: Path) -> Path:

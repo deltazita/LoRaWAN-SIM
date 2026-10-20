@@ -1,5 +1,11 @@
 CHANGELOG
 ----------
+v2026.10.20
+* Introduced Rayleigh fading -> link margin was increased to 10dB (Chirpstack default)
+* Introduced different path-loss environments (see --help)
+* LR-FHSS can be enabled directly in command line
+* Both terrain generators have been updated accordingly
+
 v2026.9.30
 * Introduced lazy cancellation to discard cancelled events only when they reach the head of their sorted channel queue
 * Replaced slow `grep` with a list shift mech which led to a 4-5x runtime speedup

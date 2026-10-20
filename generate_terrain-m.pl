@@ -1,134 +1,75 @@
 #!/usr/bin/perl -w
-#
-# Script to create a 2D terrain of nodes using the minimum possible random gateway positions
-#
-# modified copy of https://github.com/rainbow-src/sensors/tree/master/terrain%20generators
-#
-# prerequisites: https://metacpan.org/pod/Math::Random, 
-#                https://metacpan.org/pod/Algorithm::SetCovering
-
+# Greedy selection from random gateway candidates, covering every ED.
+# It may take some time...
 use strict;
-use Math::Random;
-use POSIX;
-use Algorithm::SetCovering;
+use FindBin qw($Bin);
+use POSIX qw(ceil);
+require "$Bin/generate_terrain.pl";
 
-(@ARGV==2) || die "usage: $0 <terrain_side_size_(m)> <num_of_nodes> \ne.g. $0 2000 500\n";
-
-my $tx = $ARGV[0];
-my $nodes = $ARGV[1];
-my $gws = ceil($tx*$tx/10000);
-
-($tx < 1) && die "grid side must be higher than 1 meters!\n";
-($nodes < 1) && die "number of nodes must be higher than 1!\n";
-
-my %coords;
-my %ncoords = ();
-my %gcoords = ();
-
-for(my $i=1; $i<=$nodes; $i++){
-	my ($x, $y) = (int(rand($tx*10)), int(rand($tx*10)));
-	($x, $y) = ($x/10, $y/10);
-	while (exists $coords{$x}{$y}){
-		($x, $y) = (int(rand($tx*10)), int(rand($tx*10)));
-		($x, $y) = ($x/10, $y/10);
-	}
-	$coords{$x}{$y} = 1;
-	$ncoords{$i} = [$x, $y];
-}
-my $gl = 'A';
-for(my $i=1; $i<=$gws; $i++){
-	my ($x, $y) = (int(rand($tx*10)), int(rand($tx*10)));
-	($x, $y) = ($x/10, $y/10);
-	while (exists $coords{$x}{$y}){
-		($x, $y) = (int(rand($tx*10)), int(rand($tx*10)));
-		($x, $y) = ($x/10, $y/10);
-	}
-	$coords{$x}{$y} = 1;
-	$gcoords{$gl} = [$x, $y];
-	$gl++;
+my $command = join(' ', $0, @ARGV);
+my ($positional, $radio) = terrain_arguments(\@ARGV, 2);
+my ($side, $node_count) = @$positional;
+my $candidate_count = ceil($side*$side/10000);
+die "More devices than distinct coordinates in the terrain\n" if $node_count+$candidate_count > ($side*10)**2;
+my (%used, @nodes, @gateways, @covers, %covered);
+for my $id (1 .. $node_count) {
+    my $point = terrain_position($side, \%used);
+    $used{join(',', @$point)} = 1;
+    push @nodes, [$id, @$point];
 }
 
-# set cover
-my @sensis = ([7,-127,-122,-116], [8,-129,-125,-119], [9,-132.5,-128,-122], [10,-135.5,-130,-125], [11,-138,-132,-128], [12,-141,-135,-129]); # sensitivities per SF/BW, SX1302/3 for BW125
-my $var = 3.57; # variance
-my ($dref, $Lpld0, $gamma) = (40, 110, 2.08); # attenuation model parameters
-my $margin = 5; 
-my $bw = 125000; # channel bandwidth
-my %gs = ();
-my $G = 0; # assume that variance is 0
-my $Xs = $var*$G;
-my $bwi = bwconv($bw);
-
-foreach my $g (keys %gcoords){
-	my ($gx, $gy) = @{$gcoords{$g}};
-	foreach my $s (sort keys %ncoords){
-		my ($x, $y) = @{$ncoords{$s}};
-		my $d = distance($x, $gx, $y, $gy);
-		my $f = 12;
-		my $S = $sensis[$f-7][$bwi];
-		my $Prx = 14 - ($Lpld0 + 10*$gamma * log10($d/$dref) + $Xs);
-		if (($Prx - $margin) > $S){
-			push(@{$gs{$g}}, 1);
-		}else{
-			push(@{$gs{$g}}, 0);
-		}
-	}
+sub add_candidate {
+    my ($point) = @_;
+    my @row;
+    for my $node (@nodes) {
+        if (terrain_covers($radio, [@$node[1,2]], $point)) {
+            push @row, $node->[0];
+            $covered{$node->[0]} = 1;
+        }
+    }
+    push @gateways, $point;
+    push @covers, \@row;
+    $used{join(',', @$point)} = 1;
 }
 
-my $cols = scalar keys %ncoords;
-my $mode = "greedy";
-my $alg = Algorithm::SetCovering->new(columns => $cols, mode => $mode);
-my @selected = ();
-foreach my $g (sort keys %gs){
-	$alg->add_row(@{$gs{$g}});
-	push (@selected,$g);
-}
-my @to_solve = ();
-foreach my $s (keys %ncoords){
-	push(@to_solve, 1);
-}
-my @idx_set = $alg->min_row_set(@to_solve);
-die "Not enough gateways!\n" unless (scalar @idx_set > 0);
-
-printf "# terrain map [%i x %i]\n", $tx, $tx;
-print "# node coords:";
-foreach my $s (keys %ncoords){
-	my ($x, $y) = @{$ncoords{$s}};
-	printf " %s [%.1f %.1f]", $s, $x, $y;
-}
-print "\n";
-print "# gateway coords:";
-foreach my $ind (@idx_set){
-	my ($x, $y) = @{$gcoords{$selected[$ind]}};
-	printf " %s [%.1f %.1f]", $selected[$ind], $x, $y;
-	#delete(%gcoords{$selected[$ind]});
-	#print " $selected[$ind]";
-}
-print "\n";
-#print "# Inactive gateway coords:";
-#foreach my $g (keys %gcoords){
-#	my ($x, $y) = @{$gcoords{$g}};
-#	printf " %s [%.1f %.1f]", $g, $x, $y;
-#}
-#print "\n";
-
-print  "# generated with: $0 ",join(" ",@ARGV),"\n";
-printf "# stats: nodes=%i gateways=%i terrain=%.1fm^2 node_sz=%.2fm^2\n", scalar keys %ncoords, scalar @idx_set, $tx*$tx, 0.1 * 0.1;
-
-sub distance {
-	my ($x1, $x2, $y1, $y2) = @_;
-	return sqrt( (($x1-$x2)*($x1-$x2))+(($y1-$y2)*($y1-$y2)) );
+add_candidate(terrain_position($side, \%used)) for 1 .. $candidate_count;
+# Supplement random candidates near uncovered EDs before running set cover.
+for my $node (@nodes) {
+    next if $covered{$node->[0]};
+    my $radius = $radio->{range_m}/2;
+    $radius = $side if $radius > $side;
+    my $point;
+    for (1 .. 10000) {
+        my ($x, $y) = ($node->[1]+(2*rand()-1)*$radius, $node->[2]+(2*rand()-1)*$radius);
+        next if $x < 0 || $y < 0 || $x >= $side || $y >= $side;
+        ($x, $y) = (int($x*10)/10, int($y*10)/10);
+        next if $used{"$x,$y"} || !terrain_covers($radio, [@$node[1,2]], [$x,$y]);
+        $point = [$x,$y]; last;
+    }
+    die "Cannot place a covering gateway for ED $node->[0]\n" unless $point;
+    add_candidate($point);
 }
 
-sub bwconv{
-	my $bwi = 0;
-	if ($bw == 125000){
-		$bwi = 1;
-	}elsif ($bw == 250000){
-		$bwi = 2;
-	}elsif ($bw == 500000){
-		$bwi = 3;
-	}
-	return $bwi;
+my %remaining = map { $_->[0] => 1 } @nodes;
+my (@selected, %selected);
+while (keys %remaining) {
+    my ($best, $best_count) = (undef, 0);
+    for my $index (0 .. $#gateways) {
+        next if $selected{$index};
+        my $count = 0;
+        for my $id (@{$covers[$index]}) { $count++ if $remaining{$id}; }
+        if ($count > $best_count) { ($best, $best_count) = ($index, $count); }
+    }
+    die "Uncovered EDs: " . join(', ', sort {$a <=> $b} keys %remaining) . "\n" unless defined $best;
+    $selected{$best} = 1;
+    push @selected, $best;
+    delete @remaining{@{$covers[$best]}};
 }
+my $label = 'A';
+my @output_gateways = map { [$label++, @{$gateways[$_]}] } @selected;
+for my $node (@nodes) {
+    die "Internal coverage error for ED $node->[0]\n"
+        unless grep { terrain_covers($radio, [@$node[1,2]], [@$_[1,2]]) } @output_gateways;
+}
+terrain_print($side, \@nodes, \@output_gateways, $radio, $command);
 
