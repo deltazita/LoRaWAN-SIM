@@ -119,6 +119,18 @@ by `seed`, transmitter, receiver, transmission start and frame counter, so they
 do not consume scheduling or hopping randomness. No Doppler/time correlation
 or frequency-selective fading is modeled.
 
+The deterministic sampler uses Perl's native `Digest::MD5` as a fast, non-security
+mixer, taking 32 bits for the uniform sample. Transmission times are encoded as
+big-endian binary doubles instead of formatting decimal strings. This replaces
+the earlier SHA-256 sampler: old seeds now produce different fading realizations,
+but repeated runs with the same seed remain reproducible. The Rayleigh model is
+unchanged, and scheduling/hopping random streams are still separate.
+
+LoRa uses a bounded gain cache with a single key-construction step per lookup.
+LR-FHSS reuses the radio's per-frame/receiver received-power cache instead of
+maintaining a second fading cache. With `--no-rayleigh`, received-power calculations
+skip the fading function entirely.
+
 `coverage_margin_db` defaults to `10` dB, matching the installation margin in
 [ChirpStack](https://www.chirpstack.io/docs/chirpstack/configuration.html), and
 must be finite and nonnegative. This shared margin is used for terrain coverage,

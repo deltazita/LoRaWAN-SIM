@@ -43,7 +43,7 @@ use File::Basename qw(dirname);
 use File::Path qw(make_path);
 use File::Spec;
 use Cwd qw(abs_path);
-use Digest::SHA qw(sha256);
+use Digest::MD5 qw(md5);
 require "$Bin/generate_terrain.pl";
 
 my @CONFIG_KEYS = (
@@ -809,7 +809,8 @@ while (1){
 		my $G = random_normal(1, 0, 1);
 		my $d = $dist_ng{$dest}{$sel};
 		my $Xs  = $G * $var;
-		my $prx = $Ptx_gw - $pl_ng{$dest}{$sel} - $Xs + fading_gain($sel, $dest, $sel_sta, $sel_seq);
+		my $prx = $Ptx_gw - $pl_ng{$dest}{$sel} - $Xs;
+		$prx += rayleigh_gain_db($fading_seed, $sel, $dest, $sel_sta, $sel_seq, \%fading_cache) if $rayleigh_fading;
 		my $cb = $bw125;
 		$cb = $bw500 if ($fplan eq "US915");
 		if ($prx < $sensis[$sel_sf-7][bwconv($cb)]){
@@ -848,7 +849,7 @@ while (1){
 			}else{
 				$prx_ = $Ptx_gw - $pl_ng{$dest}{$n} - $G_*$var;
 			}
-			$prx_ += fading_gain($n, $dest, $interferer_start, $interferer_seq);
+			$prx_ += rayleigh_gain_db($fading_seed, $n, $dest, $interferer_start, $interferer_seq, \%fading_cache) if $rayleigh_fading;
 			if ($overlap == 3){
 				if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
 					$failed = 1;
@@ -1090,20 +1091,17 @@ sub init_lrfhss_node {
 
 # A unit-mean exponential power gain has a Rayleigh-distributed envelope
 sub rayleigh_gain_db {
-	my ($seed, $sender, $receiver, $start, $seq) = @_;
+	my ($seed, $sender, $receiver, $start, $seq, $cache) = @_;
 	die "Rayleigh fading requires a transmission and receiver identity\n" unless defined($seed) && defined($sender) && defined($receiver) && defined($start) && defined($seq);
-	my $key = join('|', 'rayleigh', $seed, $sender, $receiver, sprintf('%.17g', $start), $seq);
-	my $u = (unpack('N', substr(sha256($key), 0, 4)) + 0.5) / 4294967296;
-	return 10 * log(-log($u)) / log(10);
-}
-
-sub fading_gain {
-	return 0 unless $rayleigh_fading;
-	my ($sender, $receiver, $start, $seq) = @_;
-	my $key = join('|', $sender, $receiver, sprintf('%.17g', $start), $seq);
-	return $fading_cache{$key} if exists $fading_cache{$key};
-	%fading_cache = () if keys(%fading_cache) >= 100000;
-	return $fading_cache{$key} = rayleigh_gain_db($fading_seed, $sender, $receiver, $start, $seq);
+	my $key = join('|', 'rayleigh', $seed, $sender, $receiver, $seq) . pack('d>', $start);
+	return $cache->{$key} if $cache && exists $cache->{$key};
+	my $u = (unpack('N', md5($key)) + 0.5) / 4294967296;
+	my $gain = 10 * log(-log($u)) / log(10);
+	if ($cache) {
+		%$cache = () if keys(%$cache) >= 100000;
+		$cache->{$key} = $gain;
+	}
+	return $gain;
 }
 
 sub lr_received_power {
@@ -1112,8 +1110,11 @@ sub lr_received_power {
 	my $from = exists $ncoords{$sender} ? $ncoords{$sender} : $gcoords{$sender};
 	my $to = exists $ncoords{$receiver} ? $ncoords{$receiver} : $gcoords{$receiver};
 	my $d = max(0.2, distance($from->[0], $to->[0], $from->[1], $to->[1]));
-	return $frame->{tx_power} - ($Lpld0 + 10*$gamma*log10($d/$dref)) - random_normal(1, 0, 1)*$var
-		+ fading_gain($sender, $receiver, $frame->{start}, $frame->{event}[5]);
+	my $power = $frame->{tx_power} - ($Lpld0 + 10*$gamma*log10($d/$dref)) - random_normal(1, 0, 1)*$var;
+	# The radio already caches the complete power per frame/receiver, including
+	# interference at receivers outside the frame's destination list.
+	$power += rayleigh_gain_db($fading_seed, $sender, $receiver, $frame->{start}, $frame->{event}[5]) if $rayleigh_fading;
+	return $power;
 }
 
 sub next_transmission {
@@ -1512,7 +1513,8 @@ sub node_col{ # handle node collisions
 		next if (exists $surpressed{$sel}{$gw}{$sel_seq});
 		my $d = $dist_ng{$sel}{$gw};
 		my $G = random_normal(1, 0, 1);
-		my $prx = $Ptx_l[$nptx{$sel}] - $pl_ng{$sel}{$gw} - $G*$var + fading_gain($sel, $gw, $sel_sta, $sel_seq);
+		my $prx = $Ptx_l[$nptx{$sel}] - $pl_ng{$sel}{$gw} - $G*$var;
+		$prx += rayleigh_gain_db($fading_seed, $sel, $gw, $sel_sta, $sel_seq, \%fading_cache) if $rayleigh_fading;
 		if ($prx < $gw_sensis[$sel_sf-7][bwconv($bw125)]){
 			$surpressed{$sel}{$gw}{$sel_seq} = 1;
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
@@ -1554,8 +1556,8 @@ sub node_col{ # handle node collisions
 				}
 				# power 
 				$d = $dist_ng{$n}{$gw};
-				my $prx_ = $Ptx_l[$nptx{$n}] - $pl_ng{$n}{$gw} - random_normal(1, 0, 1)*$var
-					+ fading_gain($n, $gw, $sta, $seq);
+				my $prx_ = $Ptx_l[$nptx{$n}] - $pl_ng{$n}{$gw} - random_normal(1, 0, 1)*$var;
+				$prx_ += rayleigh_gain_db($fading_seed, $n, $gw, $sta, $seq, \%fading_cache) if $rayleigh_fading;
 				if ($overlap == 3){
 					if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf-7]) ){ # both collide
 						$surpressed{$sel}{$gw}{$sel_seq} = 1;
@@ -1617,8 +1619,8 @@ sub node_col{ # handle node collisions
 					# power 
 					my $d_ = distance($gcoords{$gw}[0], $gcoords{$n}[0], $gcoords{$gw}[1], $gcoords{$n}[1]); # no precomputation here
 					$d_ = 0.2 if ($d_ == 0);
-					my $prx_ = $Ptx_gw - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var)
-						+ fading_gain($n, $gw, $interferer_start, $interferer_seq);
+					my $prx_ = $Ptx_gw - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
+					$prx_ += rayleigh_gain_db($fading_seed, $n, $gw, $interferer_start, $interferer_seq, \%fading_cache) if $rayleigh_fading;
 					if ($overlap == 3){
 						if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
 							$surpressed{$sel}{$gw}{$sel_seq} = 1;
