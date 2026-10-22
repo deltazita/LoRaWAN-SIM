@@ -22,7 +22,7 @@ A LoRaWAN simulator for confirmed/unconfirmed transmissions and multiple gateway
 - Non-orthogonal SF transmissions
 - Capture effect
 - Path-loss signal attenuation model
-- Optional Rayleigh block fading on desired signals and interferers
+- Nakagami m=2 block fading by default, with optional Rayleigh m=1
 - Terrain generation with nominal gateway coverage for every ED
 - Multiple channels
 - Collision handling for both uplink+downlink transmissions
@@ -93,25 +93,31 @@ perl LoRaWAN.pl --json config.json
 
 If the JSON file does not include a terrain file, the simulator generates one internally using `generate_terrain.pl` and the values of `terrain_side`, `nodes`, and `gateways`. The original positional-argument workflow remains supported.
 
-## Rayleigh fading and coverage
+## Small-scale fading and coverage
 
-Rayleigh fading is enabled by default for LoRa and LR-FHSS, including positional
-and JSON input and the Python launcher. Add `--no-rayleigh` to the simulator
-command, or set `"rayleigh_fading": 0` in JSON, to disable it. The command-line
-flag overrides the JSON value. The selected path loss and Gaussian shadowing
-remain active. The function
-`rayleigh_gain_db(...)` is implemented in `LoRaWAN.pl`; no fading module is needed.
+Nakagami fading with `m=2` and unit mean power is enabled by default for LoRa
+and LR-FHSS, including positional and JSON input and the Python launcher.
+Use `--fading-m 1` for the previous Rayleigh model or `--fading-m 2` for Nakagami.
+Only these two shapes are supported. JSON uses `"fading_m": 1` or `2`.
+Add `--no-fading` (the existing `--no-rayleigh` spelling remains an alias), or set
+the historical `"rayleigh_fading": 0` JSON key, to disable either model.
+CLI values override JSON. Path loss and Gaussian shadowing remain active.
+The sampler `fading_gain_db(...)` is a function in `LoRaWAN.pl`, not a separate
+fading module.
 For example:
 
 ```sh
-perl LoRaWAN.pl --json json-examples/rayleigh-us915.json
-perl LoRaWAN.pl 12 1 terrain.txt --fhss --no-rayleigh
-perl LoRaWAN.pl --json config.json --no-rayleigh
+perl LoRaWAN.pl 12 1 terrain.txt --fhss
+perl LoRaWAN.pl --json config.json --fading-m 1
+perl LoRaWAN.pl --json config.json --no-fading
 ```
 
-Rayleigh fading multiplies received power by a unit-mean exponential gain
-(`H = -ln(U)`), or adds `10*log10(H)` in dB. The existing path loss and
-Gaussian shadowing remain in effect. Each transmission/receiver pair gets one
+For `m=1`, the power gain is exponential: `H = -ln(U1)`. For `m=2`, it follows
+Gamma(shape=2, scale=1/2): `H = -ln(U1*U2)/2`. Both have unit mean power;
+their power variances are 1 and 1/2, respectively. The dB gain is `10*log10(H)`.
+This is a configurable scenario assumption, not a measured channel calibration.
+[Nakagami distribution reference](https://www.mathworks.com/help/stats/nakagami-distribution.html).
+Each transmission/receiver pair gets one
 gain, reused for desired-signal and interference calculations. For LR-FHSS,
 this is flat block fading: the same gain applies to all hops in a frame.
 Retransmissions and NbTrans copies get independent samples. Samples are keyed
@@ -120,21 +126,28 @@ do not consume scheduling or hopping randomness. No Doppler/time correlation
 or frequency-selective fading is modeled.
 
 The deterministic sampler uses Perl's native `Digest::MD5` as a fast, non-security
-mixer, taking 32 bits for the uniform sample. Transmission times are encoded as
+mixer, taking the first one or two 32-bit words for the uniform samples.
+Transmission times are encoded as
 big-endian binary doubles instead of formatting decimal strings. This replaces
 the earlier SHA-256 sampler: old seeds now produce different fading realizations,
-but repeated runs with the same seed remain reproducible. The Rayleigh model is
-unchanged, and scheduling/hopping random streams are still separate.
+but repeated runs with the same settings and seed remain reproducible. Explicit
+`m=1` preserves the previous MD5 Rayleigh samples; `m=2` matches the paired
+prototype used in the PDR comparison. Scheduling/hopping RNG streams stay separate.
 
 LoRa uses a bounded gain cache with a single key-construction step per lookup.
 LR-FHSS reuses the radio's per-frame/receiver received-power cache instead of
-maintaining a second fading cache. With `--no-rayleigh`, received-power calculations
+maintaining a second fading cache, so it skips the sampler's cache-key allocation.
+Nakagami unpacks both uniform samples together and computes only the selected
+model's power gain; these optimizations preserve the exact seeded samples.
+With `--no-fading`, received-power calculations
 skip the fading function entirely.
 
-`coverage_margin_db` defaults to `10` dB, matching the installation margin in
-[ChirpStack](https://www.chirpstack.io/docs/chirpstack/configuration.html), and
-must be finite and nonnegative. This shared margin is used for terrain coverage,
-initial LoRa SF selection and ADR transmit-power adjustment.
+The default coverage margin is **10 dB for LoRa and 8 dB for LR-FHSS**.
+LoRa SF selection, RX2 reachability and ADR retain a separate **10 dB** default
+installation margin, matching
+[ChirpStack](https://www.chirpstack.io/docs/chirpstack/configuration.html).
+An explicit `coverage_margin_db` JSON value still overrides both coverage and
+SF/ADR margins for backward compatibility; it must be finite and nonnegative.
 At startup every ED must have at least one nominally reachable gateway, using
 its initial transmit power, the most robust permitted LoRa SF or selected
 LR-FHSS DR, and that margin. Invalid supplied terrains fail with the uncovered
@@ -162,7 +175,40 @@ near uncovered EDs if necessary; it no longer needs `Algorithm::SetCovering`.
 Both verify unique coordinates and emit a complete covered terrain or fail.
 Automatic generation receives the simulator's actual PHY and margin settings.
 
-The Python launcher passes through `rayleigh_fading`, `coverage_margin_db`,
+### Shared EU868 terrain with every LoRa SF
+
+With FHSS DR8 sensitivity -137 dBm and a 10 dB coverage margin, every covered
+device has best nominal received power `P > -127 dBm`. But a device requiring
+LoRa SF12 at its 10 dB SF-selection margin has `P <= -128 dBm`, because SF11
+sensitivity is -138 dBm. These conditions cannot coexist: enlarging the terrain
+alone cannot produce SF12 on that shared population.
+
+The 8 dB FHSS coverage rule instead permits `P > -129 dBm`, leaving
+`(-129, -128] dBm` for SF12 devices while preserving 10 dB LoRa headroom.
+For the `legacy` environment, a tested choice is **5000 x 5000 m, 9000 EDs,
+EU868, FHSS DR8**. All SF7-SF12 appeared with 1, 2 and 4 gateways for seeds
+1, 2, 3, 4, 5 and 42. Mean initial device percentages across those six seeds:
+
+| Gateways | SF7 | SF8 | SF9 | SF10 | SF11 | SF12 |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 8.95% | 4.75% | 14.46% | 23.17% | 31.91% | 16.75% |
+| 2 | 9.19% | 4.91% | 15.13% | 23.83% | 30.86% | 16.08% |
+| 4 | 12.07% | 6.00% | 18.34% | 26.30% | 26.84% | 10.45% |
+
+```sh
+perl generate_terrain.pl 5000 9000 4 42 --fhss --lrfhss-dr 8 > terrain.txt
+perl LoRaWAN.pl 12 1 terrain.txt --fhss --lrfhss-dr 8
+perl LoRaWAN.pl 12 1 terrain.txt
+```
+
+These are this project's nominal, unshadowed initial-SF budgets; reception still
+resamples Gaussian shadowing. Gateways are uniform across the square, and the
+fixed-count generator samples EDs uniformly within covered portions of the
+square, not using Gaussian placement. Smaller populations or other seeds may
+omit an SF. DR10 has the same sensitivity; DR9/DR11 at -134 dBm still exclude
+SF12 with 8 dB headroom. US915 uplinks support SF7-SF10, not SF11/SF12.
+
+The Python launcher passes through `rayleigh_fading`, `fading_m`, `coverage_margin_db`,
 `environment` and `seed`, and includes them in its simulation cache key. These controls do not
 change the trained recommendation models' feature set or retrain those models.
 
@@ -220,26 +266,26 @@ Use the same environment, region, DR, sensitivity and margin on both sides.
 Automatic terrain generation forwards the environment. Non-legacy generated
 files record the selected coefficients in a `# propagation:` header.
 
-At EU868's initial 14 dBm and the default 10 dB margin, the calculated nominal
+At EU868's initial 14 dBm and the default margins (LoRa 10 dB, FHSS 8 dB), the calculated nominal
 LoRa SF12 / LR-FHSS DR8 ranges are:
 
 | Environment | LoRa SF12 | LR-FHSS DR8 |
 |---|---:|---:|
-| `legacy` | 1.93 km | 1.24 km |
-| `oulu` | 4.92 km | 3.31 km |
-| `bonn` | 6.26 km | 3.50 km |
+| `legacy` | 1.93 km | 1.54 km |
+| `oulu` | 4.92 km | 4.03 km |
+| `bonn` | 6.26 km | 4.68 km |
 
 These are median-path-loss planning distances, not guaranteed reception ranges.
 The measured presets also have greater shadowing variation. A lower median loss
 therefore does not guarantee a particular PDR improvement.
 
-Rayleigh fading remains independently enabled by default. The presets retain
+Nakagami m=2 remains independently enabled by default. The presets retain
 the simulator's existing per-transmission shadowing sampling; they do not
 reproduce spatial correlation or the studies' full temporal statistics. Measured
 RSSI scatter may already include unresolved small-scale fading. When reproducing
-one of the fitted log-normal models, use `--no-rayleigh` (or set
+one of the fitted log-normal models, use `--no-fading` (or set
 `"rayleigh_fading": 0` in JSON) as the baseline; jointly calibrate shadowing and
-Rayleigh before treating them as independent extra impairments. LR-FHSS fading is still flat over the whole frame.
+small-scale fading before treating them as independent extra impairments. LR-FHSS fading is still flat over the whole frame.
 
 The launcher forwards the environment and separates its cache entries. Existing
 recommendation models are not retrained or validated for these new environments.
@@ -327,13 +373,16 @@ the US915 example explicitly selects SF12. Downlinks always use LoRa.
   generator. Identical inputs reproduce runs on the same software stack, excluding
   execution-time statistics and generated filenames.
 - `picture`: 0 disables SVG output, 1 retains the existing terrain-adjacent SVG.
-- `rayleigh_fading`: 1 (default) or 0 to disable. `--no-rayleigh` disables it
-  from the command line, overriding JSON. When enabled, one normalized Rayleigh
+- `fading_m`: 2 (default, Nakagami) or 1 (Rayleigh), also selectable with `--fading-m`.
+- `rayleigh_fading`: historical enable key, 1 (default) or 0 to disable either
+  fading model. `--no-fading` / `--no-rayleigh` disables it, overriding JSON.
+  When enabled, one normalized
   power gain is held across all hops of each transmission/receiver pair; fresh
   transmission attempts get fresh samples. Fading also applies to LoRa downlinks
   and interferers. The sampler is a function in `LoRaWAN.pl`.
-- `coverage_margin_db`: defaults to 10 dB, matching ChirpStack's installation
-  margin. It is also used by ADR. Every ED must nominally reach a gateway
+- `coverage_margin_db`: optional shared override. Without it, coverage defaults
+  to 10 dB for LoRa and 8 dB for FHSS, while SF selection/ADR retain 10 dB.
+  Explicit values override both margins. Every ED must nominally reach a gateway
   at the selected LR-FHSS DR and initial TX power with this margin. The two
   terrain generators use the same rule; supplied uncovered terrains are rejected.
   Actual packets can still be lost to random fading, shadowing or collisions.
@@ -386,6 +435,8 @@ and header/fragment observation and loss counts. Each observation belongs to one
 packet at one gateway; losses include sensitivity, collision, and half-duplex
 outages, so these counts are not unique transmitted fragments.
 
+See the [complete LR-FHSS output example](#lr-fhss-eu868-dr8) below.
+
 ## AI-assisted recommendation system
 The repository includes a Python launcher that runs the LoRaWAN simulator once for a baseline configuration and then uses trained ML models to recommend parameter changes. The recommendation targets are:
 
@@ -428,34 +479,147 @@ Notes:
 - For confirmed traffic, set `with_ack` to `1`; for unconfirmed traffic, set it to `0`.
 - `max_retr` is only meaningful when confirmed traffic is enabled.
 
-### Output sample of the basic simulator:  
+## Simulator output examples
+
+These complete stdout samples were generated with the current simulator on the
+same 3000 x 3000 m terrain: 1000 EDs, 5 gateways, 12 packets/hour and 10 simulated
+hours. Both use EU868, the `legacy` environment, default Nakagami `m=2` fading,
+16-byte application payloads and unconfirmed traffic. ADR remains enabled, so
+gateways still send MAC commands even though uplinks do not request ACKs.
+
+Generate the shared terrain with FHSS coverage (also sufficient for LoRa here).
+Fix the seed and Perl hash settings to reproduce the non-timing output on the
+same software stack:
+
+```sh
+export PERL_HASH_SEED=0 PERL_PERTURB_KEYS=0
+perl generate_terrain.pl 3000 1000 5 42 --fhss > terrain-example.txt
 ```
-Simulation time = 35999.408 secs
-Avg node consumption = 50.50573 J
-Min node consumption = 32.32120 J
-Max node consumption = 157.91968 J
-Total number of transmissions = 119862
-Total number of unique transmissions = 119658
-Stdv of unique transmissions = 0.47
-Total packets delivered = 96832
-Total packets acknowledged = 0
+
+Progress percentages written to stderr are not shown. Execution times below are
+illustrative and vary with the machine and system load, not just modulation.
+
+### LoRa (EU868)
+
+```sh
+perl LoRaWAN.pl 12 10 terrain-example.txt --seed 42 --picture 0
+```
+
+```text
+Simulation time = 36000.037 secs
+Avg node consumption = 39.94893 J
+Min node consumption = 28.16649 J
+Max node consumption = 83.52553 J
+Total number of transmissions = 126534
+Total NbTrans repetitions = 7102
+Avg applied NbTrans = 1.119
+Total number of unique transmissions = 119432
+Stdv of unique transmissions = 0.89
+Total packets received = 124980
+Total unique packets acknowledged = 0
 Total confirmed packets dropped = 0
-Total unconfirmed packets dropped = 22826
-Packet Delivery Ratio = 0.80924
-Packet Reception Ratio = 0.80924
-Uplink fairness = 0.088
-Script execution time = 6.2148 secs
+Total unconfirmed packets dropped = 1237
+Packet Delivery Ratio = 0.98964
+Packet Reception Ratio = 0.98772
+Unconfirmed uplink fairness = 0.011
 -----
-# of nodes with SF7: 197, Avg retransmissions: 0.00
-# of nodes with SF8: 119, Avg retransmissions: 0.00
-# of nodes with SF9: 229, Avg retransmissions: 0.00
-# of nodes with SF10: 279, Avg retransmissions: 0.00
-# of nodes with SF11: 159, Avg retransmissions: 0.00
-# of nodes with SF12: 17, Avg retransmissions: 0.00
-Avg SF = 9.135
-Avg packet size = 35.912 bytes
+No GW available in RX1 = 0 times
+No GW available in RX1 or RX2 = 0 times
+Total downlink time = 551.586559999983 sec
+GW A sent out 653 acks and commands
+	 - Total duty cycle in band 48: 0.12%
+	 - Total duty cycle in band 47: 0.18%
+	 - Total duty cycle in RX2 channel: 0.04%
+GW B sent out 653 acks and commands
+	 - Total duty cycle in band 48: 0.10%
+	 - Total duty cycle in band 47: 0.17%
+	 - Total duty cycle in RX2 channel: 0.04%
+GW C sent out 593 acks and commands
+	 - Total duty cycle in band 48: 0.08%
+	 - Total duty cycle in band 47: 0.15%
+	 - Total duty cycle in RX2 channel: 0.03%
+GW D sent out 667 acks and commands
+	 - Total duty cycle in band 48: 0.12%
+	 - Total duty cycle in band 47: 0.18%
+	 - Total duty cycle in RX2 channel: 0.04%
+GW E sent out 637 acks and commands
+	 - Total duty cycle in band 48: 0.09%
+	 - Total duty cycle in band 47: 0.15%
+	 - Total duty cycle in RX2 channel: 0.04%
+# of nodes with SF7: 260, Avg retransmissions: 0.00
+# of nodes with SF8: 152, Avg retransmissions: 0.00
+# of nodes with SF9: 284, Avg retransmissions: 0.00
+# of nodes with SF10: 217, Avg retransmissions: 0.00
+# of nodes with SF11: 84, Avg retransmissions: 0.00
+# of nodes with SF12: 3, Avg retransmissions: 0.00
+Avg SF = 8.722
+Script execution time = 8.3190 secs
+```
+
+### LR-FHSS (EU868 DR8)
+
+Use the same terrain and traffic, adding only `--fhss`:
+
+```sh
+perl LoRaWAN.pl 12 10 terrain-example.txt --seed 42 --picture 0 --fhss
+```
+
+```text
+Simulation time = 36002.132 secs
+Avg node consumption = 93.80091 J
+Min node consumption = 75.78084 J
+Max node consumption = 143.60332 J
+Total number of transmissions = 120076
+Total NbTrans repetitions = 2255
+Avg applied NbTrans = 1.068
+Total number of unique transmissions = 117821
+Stdv of unique transmissions = 3.91
+Total packets received = 119416
+Total unique packets acknowledged = 0
+Total confirmed packets dropped = 0
+Total unconfirmed packets dropped = 592
+Packet Delivery Ratio = 0.99498
+Packet Reception Ratio = 0.99450
+Unconfirmed uplink fairness = 0.008
+-----
+No GW available in RX1 = 0 times
+No GW available in RX1 or RX2 = 0 times
+Total downlink time = 1467.78419200004 sec
+GW A sent out 674 acks and commands
+	 - Total duty cycle in band 48: 0.31%
+	 - Total duty cycle in band 47: 0.40%
+	 - Total duty cycle in RX2 channel: 0.13%
+GW B sent out 616 acks and commands
+	 - Total duty cycle in band 48: 0.28%
+	 - Total duty cycle in band 47: 0.39%
+	 - Total duty cycle in RX2 channel: 0.11%
+GW C sent out 594 acks and commands
+	 - Total duty cycle in band 48: 0.25%
+	 - Total duty cycle in band 47: 0.38%
+	 - Total duty cycle in RX2 channel: 0.11%
+GW D sent out 695 acks and commands
+	 - Total duty cycle in band 48: 0.31%
+	 - Total duty cycle in band 47: 0.44%
+	 - Total duty cycle in RX2 channel: 0.13%
+GW E sent out 663 acks and commands
+	 - Total duty cycle in band 48: 0.29%
+	 - Total duty cycle in band 47: 0.40%
+	 - Total duty cycle in RX2 channel: 0.13%
+Uplink modulation = LR-FHSS
+Frequency plan = EU868
+LR-FHSS data rate = DR8
+LR-FHSS coding rate = 1/3
+LR-FHSS header replicas = 3
+LR-FHSS header observations = 1801140
+LR-FHSS lost header observations = 768301
+LR-FHSS fragment observations = 9619980
+LR-FHSS lost fragment observations = 4077939
+Script execution time = 23.6875 secs
 ```
 
 ### Generated image:
+
+The output examples above disable SVG generation with `--picture 0`. Omit that
+option to write a terrain-adjacent SVG; the image below illustrates a separate run.
 
 <img src="https://user-images.githubusercontent.com/6707477/176494005-28cd637f-0faa-4ec4-a584-7b2e935c9a6e.svg" width="400" height="400">

@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                   v2026.10.20                                   #
+#                                   v2026.10.22                                   #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum                                                      #
@@ -16,6 +16,7 @@
 # -- Percentage of nodes required confirmed transmissions                         #
 # -- Capture effect                                                               #
 # -- Path-loss signal attenuation model (uplink+downlink)                         #
+# -- Rayleigh or Nakagami fading
 # -- Multiple channels                                                            #
 # -- Collision handling for both uplink and downlink transmissions                #
 # -- Energy consumption calculation (uplink+downlink)                             #
@@ -91,7 +92,8 @@ sub usage {
 		   "  --fhss                              Enable LR-FHSS uplinks (default: LoRa)\n" .
 		   "  --frequency-plan EU868|US915         Region (default: EU868; --region alias)\n" .
 		   "  --environment legacy|oulu|bonn      Propagation/shadowing profile (default: legacy)\n" .
-		   "  --no-rayleigh                       Disable Rayleigh fading (enabled by default)\n" .
+		   "  --fading-m 1|2                      Fading shape: 1=Rayleigh, 2=Nakagami (default: 2)\n" .
+		   "  --no-fading                         Disable small-scale fading (--no-rayleigh alias)\n" .
 		   "  --lrfhss-dr N                       EU868: 8..11 (default 8); US915: 5..6 (default 5)\n" .
 		   "  --lrfhss-sensitivity-dbm N           Receiver threshold in dBm\n" .
 		   "  --lrfhss-capture-db N                Capture threshold in dB (default: 6)\n" .
@@ -137,10 +139,10 @@ sub parse_simulator_config {
 	my @options = (
 		'json|config=s' => \$json_file,
 		'fhss' => \$fhss,
-		'no-rayleigh' => sub { $overrides{rayleigh_fading} = 0; },
+		'no-fading|no-rayleigh' => sub { $overrides{rayleigh_fading} = 0; },
 		'help' => \$help,
 	);
-	for my $key (qw(frequency_plan environment lrfhss_dr lrfhss_sensitivity_dbm lrfhss_capture_db seed picture)) {
+	for my $key (qw(frequency_plan environment fading_m lrfhss_dr lrfhss_sensitivity_dbm lrfhss_capture_db seed picture)) {
 		my $option = $key;
 		$option =~ s/_/-/g;
 		$option .= '|region' if $key eq 'frequency_plan';
@@ -235,8 +237,9 @@ sub generate_terrain_from_config {
 
 	my @generator_args = ($side, $nodes, $gateways);
 	push @generator_args, as_int($cfg_ref->{seed}, "seed") if exists $cfg_ref->{seed};
+	my $radio = terrain_radio_parameters($cfg_ref);
 	push @generator_args, '--frequency-plan', $cfg_ref->{frequency_plan} // 'EU868',
-		'--coverage-margin-db', $cfg_ref->{coverage_margin_db} // 10;
+		'--coverage-margin-db', $radio->{margin_db};
 	push @generator_args, '--environment', $cfg_ref->{environment} if exists $cfg_ref->{environment};
 	my $terrain_modulation = $cfg_ref->{uplink_modulation} // 'LoRa';
 	$terrain_modulation =~ s/[-_]//g;
@@ -296,6 +299,8 @@ my $lr_capture = as_number(config_value(\%CONFIG, "lrfhss_capture_db", 6), "lrfh
 die "lrfhss_capture_db must be nonnegative\n" if $lr_capture < 0;
 my $rayleigh_fading = as_int(config_value(\%CONFIG, 'rayleigh_fading', 1), 'rayleigh_fading');
 die "rayleigh_fading must be 0 or 1\n" unless $rayleigh_fading == 0 || $rayleigh_fading == 1;
+my $fading_m = as_int(config_value(\%CONFIG, 'fading_m', 2), 'fading_m');
+die "fading_m must be 1 (Rayleigh) or 2 (Nakagami)\n" unless $fading_m == 1 || $fading_m == 2;
 my $coverage_radio = terrain_radio_parameters(\%CONFIG);
 my $fading_seed = exists $CONFIG{seed} ? as_int($CONFIG{seed}, 'seed') : (int(time*1000000) ^ $$);
 my %fading_cache;
@@ -358,7 +363,7 @@ my %gtime = (); # gateway downlink time per band or channel
 my @sensis = ([7,-124,-122,-116], [8,-127,-125,-119], [9,-130,-128,-122], [10,-133,-130,-125], [11,-135,-132,-128], [12,-137,-135,-129]); # sensitivities per SF/BW (SX1262)
 my @gw_sensis = ([7,-127,-122,-116], [8,-129,-125,-119], [9,-132.5,-128,-122], [10,-135.5,-130,-125], [11,-138,-132,-128], [12,-141,-135,-129]); # SX1302/3 for BW125
 my @thresholds = ([1,-8,-9,-9,-9,-9], [-11,1,-11,-12,-13,-13], [-15,-13,1,-13,-14,-15], [-19,-18,-17,1,-17,-18], [-22,-22,-21,-20,1,-20], [-25,-25,-25,-24,-23,1]); # capture effect power thresholds per SF[SF] for non-orthogonal transmissions
-my $margin = $coverage_radio->{margin_db};
+my $margin = $coverage_radio->{link_margin_db}; # SF selection and ADR remain at 10 dB by default.
 my $var = $coverage_radio->{shadowing_db}; # shadowing standard deviation (dB), not variance
 my ($dref, $Lpld0, $gamma) = @{$coverage_radio}{qw(dref loss_db gamma)};
 my $noise = -90; # noise level for snr calculation
@@ -810,7 +815,7 @@ while (1){
 		my $d = $dist_ng{$dest}{$sel};
 		my $Xs  = $G * $var;
 		my $prx = $Ptx_gw - $pl_ng{$dest}{$sel} - $Xs;
-		$prx += rayleigh_gain_db($fading_seed, $sel, $dest, $sel_sta, $sel_seq, \%fading_cache) if $rayleigh_fading;
+		$prx += fading_gain_db($fading_seed, $sel, $dest, $sel_sta, $sel_seq, \%fading_cache, $fading_m) if $rayleigh_fading;
 		my $cb = $bw125;
 		$cb = $bw500 if ($fplan eq "US915");
 		if ($prx < $sensis[$sel_sf-7][bwconv($cb)]){
@@ -849,7 +854,7 @@ while (1){
 			}else{
 				$prx_ = $Ptx_gw - $pl_ng{$dest}{$n} - $G_*$var;
 			}
-			$prx_ += rayleigh_gain_db($fading_seed, $n, $dest, $interferer_start, $interferer_seq, \%fading_cache) if $rayleigh_fading;
+			$prx_ += fading_gain_db($fading_seed, $n, $dest, $interferer_start, $interferer_seq, \%fading_cache, $fading_m) if $rayleigh_fading;
 			if ($overlap == 3){
 				if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
 					$failed = 1;
@@ -1089,17 +1094,34 @@ sub init_lrfhss_node {
 	return $lr_profile->{rx1sf};
 }
 
-# A unit-mean exponential power gain has a Rayleigh-distributed envelope
-sub rayleigh_gain_db {
-	my ($seed, $sender, $receiver, $start, $seq, $cache) = @_;
-	die "Rayleigh fading requires a transmission and receiver identity\n" unless defined($seed) && defined($sender) && defined($receiver) && defined($start) && defined($seq);
-	my $key = join('|', 'rayleigh', $seed, $sender, $receiver, $seq) . pack('d>', $start);
-	return $cache->{$key} if $cache && exists $cache->{$key};
-	my $u = (unpack('N', md5($key)) + 0.5) / 4294967296;
-	my $gain = 10 * log(-log($u)) / log(10);
+# Unit-mean power: Exp(1) for Rayleigh, Gamma(2, 1/2) for Nakagami m=2.
+sub fading_gain_db {
+	my ($seed, $sender, $receiver, $start, $seq, $cache, $shape) = @_;
+	$shape //= 2;
+	die "fading_m must be 1 (Rayleigh) or 2 (Nakagami)\n" unless $shape == 2 || $shape == 1;
+	die "Fading requires a transmission and receiver identity\n" unless defined($seed) && defined($sender) && defined($receiver) && defined($start) && defined($seq);
+	# Retain the established hash input for m=1 and the paired m=2 prototype.
+	my $key = "rayleigh|$seed|$sender|$receiver|$seq" . pack('d>', $start);
+	my $cache_key;
+	if ($cache) {
+		$cache_key = $shape == 1 ? $key : "m=$shape|$key";
+		return $cache->{$cache_key} if exists $cache->{$cache_key};
+	}
+	my $power;
+	if ($shape == 2) {
+		# One hash/unpack, and no discarded Rayleigh logarithm or unused cache key.
+		my ($a, $b) = unpack('NN', md5($key));
+		my $u = ($a + 0.5) / 4294967296;
+		my $v = ($b + 0.5) / 4294967296;
+		$power = -log($u*$v)/2;
+	} else {
+		my $u = (unpack('N', md5($key)) + 0.5) / 4294967296;
+		$power = -log($u);
+	}
+	my $gain = 10 * log($power) / log(10);
 	if ($cache) {
 		%$cache = () if keys(%$cache) >= 100000;
-		$cache->{$key} = $gain;
+		$cache->{$cache_key} = $gain;
 	}
 	return $gain;
 }
@@ -1113,7 +1135,7 @@ sub lr_received_power {
 	my $power = $frame->{tx_power} - ($Lpld0 + 10*$gamma*log10($d/$dref)) - random_normal(1, 0, 1)*$var;
 	# The radio already caches the complete power per frame/receiver, including
 	# interference at receivers outside the frame's destination list.
-	$power += rayleigh_gain_db($fading_seed, $sender, $receiver, $frame->{start}, $frame->{event}[5]) if $rayleigh_fading;
+	$power += fading_gain_db($fading_seed, $sender, $receiver, $frame->{start}, $frame->{event}[5], undef, $fading_m) if $rayleigh_fading;
 	return $power;
 }
 
@@ -1514,7 +1536,7 @@ sub node_col{ # handle node collisions
 		my $d = $dist_ng{$sel}{$gw};
 		my $G = random_normal(1, 0, 1);
 		my $prx = $Ptx_l[$nptx{$sel}] - $pl_ng{$sel}{$gw} - $G*$var;
-		$prx += rayleigh_gain_db($fading_seed, $sel, $gw, $sel_sta, $sel_seq, \%fading_cache) if $rayleigh_fading;
+		$prx += fading_gain_db($fading_seed, $sel, $gw, $sel_sta, $sel_seq, \%fading_cache, $fading_m) if $rayleigh_fading;
 		if ($prx < $gw_sensis[$sel_sf-7][bwconv($bw125)]){
 			$surpressed{$sel}{$gw}{$sel_seq} = 1;
 			print "# packet didn't reach gw $gw\n" if ($debug == 1);
@@ -1557,7 +1579,7 @@ sub node_col{ # handle node collisions
 				# power 
 				$d = $dist_ng{$n}{$gw};
 				my $prx_ = $Ptx_l[$nptx{$n}] - $pl_ng{$n}{$gw} - random_normal(1, 0, 1)*$var;
-				$prx_ += rayleigh_gain_db($fading_seed, $n, $gw, $sta, $seq, \%fading_cache) if $rayleigh_fading;
+				$prx_ += fading_gain_db($fading_seed, $n, $gw, $sta, $seq, \%fading_cache, $fading_m) if $rayleigh_fading;
 				if ($overlap == 3){
 					if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf-7]) ){ # both collide
 						$surpressed{$sel}{$gw}{$sel_seq} = 1;
@@ -1620,7 +1642,7 @@ sub node_col{ # handle node collisions
 					my $d_ = distance($gcoords{$gw}[0], $gcoords{$n}[0], $gcoords{$gw}[1], $gcoords{$n}[1]); # no precomputation here
 					$d_ = 0.2 if ($d_ == 0);
 					my $prx_ = $Ptx_gw - ($Lpld0 + 10*$gamma * log10($d_/$dref) + $G_*$var);
-					$prx_ += rayleigh_gain_db($fading_seed, $n, $gw, $interferer_start, $interferer_seq, \%fading_cache) if $rayleigh_fading;
+					$prx_ += fading_gain_db($fading_seed, $n, $gw, $interferer_start, $interferer_seq, \%fading_cache, $fading_m) if $rayleigh_fading;
 					if ($overlap == 3){
 						if ((abs($prx - $prx_) <= $thresholds[$sel_sf-7][$sf_-7]) ){ # both collide
 							$surpressed{$sel}{$gw}{$sel_seq} = 1;
@@ -1871,16 +1893,17 @@ sub read_data{
 # can all devices reach at least one gw?
 sub validate_coverage {
 	my @uncovered;
+	my $coverage_margin = $coverage_radio->{margin_db};
 	for my $node (sort {$a <=> $b} keys %ncoords) {
 		my $reachable = 0;
 		for my $gw (@gw_ids) {
-			if ($Ptx_l[$nptx{$node}] - $pl_ng{$node}{$gw} - $margin > $coverage_radio->{sensitivity_dbm}) {
+			if ($Ptx_l[$nptx{$node}] - $pl_ng{$node}{$gw} - $coverage_margin > $coverage_radio->{sensitivity_dbm}) {
 				$reachable = 1; last;
 			}
 		}
 		push @uncovered, $node unless $reachable;
 	}
-	die "Uncovered EDs for $fplan $modulation (nominal link budget, margin ${margin}dB): " .
+	die "Uncovered EDs for $fplan $modulation (nominal link budget, margin ${coverage_margin}dB): " .
 		join(', ', @uncovered) . ". Reduce terrain size, change PHY or add gateways.\n" if @uncovered;
 }
 

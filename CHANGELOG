@@ -1,5 +1,12 @@
 CHANGELOG
 ----------
+v2026.10.22
+* Introduced Nakagami fading; enable it with --fading-m 2; Rayleigh fading can still be used with --fading-m 1 
+* Fading introduces a 5-6% runtime penalty; you can disable it with --no-fading
+* Fixed an issue with SF12 missing when terrains were generated with 10dB margin
+* Replaced the slow SHA256 with MD5 hashing in seed generation
+* Updated README (polished with GPT 6.1)
+
 v2026.10.20
 * Introduced Rayleigh fading -> link margin was increased to 10dB (Chirpstack default)
 * Introduced different path-loss environments (see --help)

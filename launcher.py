@@ -175,6 +175,10 @@ def normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
     if float(fading) not in (0, 1):
         raise ValueError("rayleigh_fading must be 0 or 1")
     out["rayleigh_fading"] = int(fading)
+    shape = normalized.get("fading_m", 2)
+    if float(shape) not in (1, 2):
+        raise ValueError("fading_m must be 1 (Rayleigh) or 2 (Nakagami)")
+    out["fading_m"] = int(shape)
     margin = float(normalized.get("coverage_margin_db", 10))
     if not math.isfinite(margin) or margin < 0:
         raise ValueError("coverage_margin_db must be finite and nonnegative")
@@ -191,14 +195,14 @@ def config_cache_key(config: Dict[str, Any]) -> Tuple[Any, ...]:
     """Build a stable cache key for a normalized configuration."""
     cfg = normalize_config(config)
     return tuple(cfg[key] for key in CANONICAL_KEYS) + (
-        cfg["rayleigh_fading"], cfg["coverage_margin_db"], cfg.get("seed"), cfg["environment"])
+        cfg["rayleigh_fading"], cfg["fading_m"], cfg["coverage_margin_db"], cfg.get("seed"), cfg["environment"])
 
 
 def perl_json_from_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Build the JSON object expected by the JSON-capable Perl simulator."""
     cfg = normalize_config(config)
     result = {key: int(cfg[key]) for key in CANONICAL_KEYS}
-    for key in ("rayleigh_fading", "coverage_margin_db", "seed", "environment"):
+    for key in ("rayleigh_fading", "fading_m", "coverage_margin_db", "seed", "environment"):
         if key in cfg:
             result[key] = cfg[key]
     return result

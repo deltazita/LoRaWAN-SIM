@@ -32,7 +32,10 @@ sub terrain_radio_parameters {
     my $mode = $config->{uplink_modulation} // 'LoRa';
     $mode =~ s/[-_]//g;
     die "uplink_modulation must be LoRa or LRFHSS\n" unless $mode eq 'LoRa' || $mode eq 'LRFHSS';
-    my $margin = $config->{coverage_margin_db} // 10; # ChirpStack installation margin (dB).
+    # Separate coverage headroom from the LoRa SF/ADR installation margin.
+    # An explicit legacy override still sets both, preserving existing JSONs.
+    my $link_margin = $config->{coverage_margin_db} // 10;
+    my $margin = $config->{coverage_margin_db} // ($mode eq 'LRFHSS' ? 8 : 10);
     die "coverage_margin_db must be finite and nonnegative\n" unless $margin =~ /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/ && isfinite($margin) && $margin >= 0;
     my $power = $region eq 'US915' ? 20 : 14;
     my $sensitivity = $region eq 'US915' ? -135.5 : -141;
@@ -46,7 +49,8 @@ sub terrain_radio_parameters {
     die "Receiver sensitivity must be finite and numeric\n"
         unless $sensitivity =~ /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/ && isfinite($sensitivity);
     my $radio = {power_dbm => $power, sensitivity_dbm => 0+$sensitivity,
-                 margin_db => 0+$margin, %{propagation_parameters($config)}};
+                 margin_db => 0+$margin, link_margin_db => 0+$link_margin,
+                 %{propagation_parameters($config)}};
     $radio->{range_m} = $radio->{dref} * 10 **
         (($power-$sensitivity-$radio->{loss_db}-$margin)/(10*$radio->{gamma}));
     die "Selected PHY and margin cannot cover a distinct ED/GW pair at the minimum model distance\n"
