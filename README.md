@@ -93,6 +93,24 @@ perl LoRaWAN.pl --json config.json
 
 If the JSON file does not include a terrain file, the simulator generates one internally using `generate_terrain.pl` and the values of `terrain_side`, `nodes`, and `gateways`. The original positional-argument workflow remains supported.
 
+### US915 LoRa payload limits
+
+For BW125 uplinks, the simulator uses the repeater-compatible application
+payload limits from [RP002-1.0.5, Table 24](https://read.uberflip.com/i/1540208-rp002-1-0-5-lorawan-regional-parameters/44):
+
+| Uplink | Data rate | Maximum application payload (bytes, no FOpts) |
+| --- | --- | --- |
+| SF7/BW125 | DR3 | 222 |
+| SF8/BW125 | DR2 | 125 |
+| SF9/BW125 | DR1 | 53 |
+| SF10/BW125 | DR0 | 11 |
+
+LoRa `pkt_size` is capped per node at its selected SF. With ADR enabled,
+US915 reserves two bytes for a possible LinkADRAns in FOpts, so the application
+limits become 220, 123, 51 and 9 bytes respectively. LoRaWAN headers and MIC
+are added separately for airtime calculations. SF8/BW500 (DR4) uplinks are
+not currently simulated.
+
 ## Small-scale fading and coverage
 
 Nakagami fading with `m=2` and unit mean power is enabled by default for LoRa
@@ -349,8 +367,8 @@ sections 3.4, 3.5 and 5.3. Each header lasts 233.472 ms; payload hops last up to
 and hop preambles. For example, a 16-byte application message plus 13-byte LoRaWAN
 overhead occupies 2.326528 s at DR8 or 1.280000 s at DR9.
 
-RX2 uses `rx2sf` and the regional downlink bandwidth. Its existing default is SF9;
-the US915 example explicitly selects SF12. Downlinks always use LoRa.
+US915 RX2 always uses SF12 at 500 kHz (DR8) on 923.3 MHz, overriding `rx2sf`.
+EU868 RX2 uses `rx2sf` (default SF9) at 125 kHz. Downlinks always use LoRa.
 
 ### LR-FHSS configuration
 

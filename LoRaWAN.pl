@@ -2,7 +2,7 @@
 
 ###################################################################################
 #          Event-based simulator for (un)confirmed LoRaWAN transmissions          #
-#                                   v2026.10.22                                   #
+#                                   v2026.10.24                                   #
 #                                                                                 #
 # Features:                                                                       #
 # -- EU868 or US915 spectrum                                                      #
@@ -16,7 +16,7 @@
 # -- Percentage of nodes required confirmed transmissions                         #
 # -- Capture effect                                                               #
 # -- Path-loss signal attenuation model (uplink+downlink)                         #
-# -- Rayleigh or Nakagami fading
+# -- Rayleigh or Nakagami fading                                                  #
 # -- Multiple channels                                                            #
 # -- Collision handling for both uplink and downlink transmissions                #
 # -- Energy consumption calculation (uplink+downlink)                             #
@@ -388,6 +388,7 @@ my %uplink_ch_index = ();
 if ($fplan eq "US915"){
 	@channels = (903900000, 904100000, 904300000, 904500000, 904700000, 904900000, 905100000, 905300000);
 	%uplink_ch_index = (903900000=>0, 904100000=>1, 904300000=>2, 904500000=>3, 904700000=>4, 904900000=>5, 905100000=>6, 905300000=>7); # key=uplink channel, value=index of uplink channel in @channels
+	$rx2sf = 12; # US915 RX2 uses DR8 (SF12/BW500), regardless of the shared rx2sf setting.
 	$rx2ch = 923300000; # channel used for RX2
 }
 if (($fplan eq "EU868") && ($number_of_bands == 1)){
@@ -405,12 +406,14 @@ if ($lrfhss) {
 	}
 }
 my $bw500 = 500000;
-my $window_bw = ($lrfhss && $fplan eq "US915") ? $bw500 : $bw125;
+my $window_bw = $fplan eq "US915" ? $bw500 : $bw125;
 my @channels_d = (923300000, 923900000, 924500000, 925100000, 925700000, 926300000, 926900000, 927500000); # 8x500kHz RX1 downlink channels (all SFs)
 
 # packet specific parameters
-my @fpl = (222, 222, 115, 51, 51, 51); # max uplink frame payload per SF (bytes)
-@fpl = (222, 125, 53, 11) if ($fplan eq "US915"); # max uplink frame payload per DR(4-0) (bytes)
+my @fpl = (222, 222, 115, 51, 51, 51); # max uplink application payload, indexed by SF-7 (bytes)
+# RP002-1.0.5 Table 24 (repeater compatible), without FOpts:
+# SF7/8/9/10 at BW125 correspond to DR3/2/1/0. DR4 (SF8/BW500) is not simulated.
+@fpl = (222, 125, 53, 11) if ($fplan eq "US915");
 my $preamble = 8; # in symbols
 my $H = 0; # header 0/1
 my $hcrc = 0; # HCRC bytes
@@ -1232,7 +1235,7 @@ sub schedule_downlink{
 	}
 	my $cb = $bw125;
 	$cb = $bw500 if ($fplan eq "US915");
-	my $down_sf = ($lrfhss && $rwindow == 2) ? $rx2sf : $sel_sf;
+	my $down_sf = $rwindow == 2 ? $rx2sf : $sel_sf;
 	my $airt = airtime($down_sf, $cb, $overhead_d+$extra_bytes);
 	my ($ack_sta, $ack_end) = ($sel_end+$rwindow, $sel_end+$rwindow+$airt);
 	$total_down_time += $airt;
@@ -1731,7 +1734,10 @@ sub min_sf{
 	}else{
 		$npkt{$n} = $packet_size;
 	}
-	$npkt{$n} = $fpl[$sf-7] if ($npkt{$n} > $fpl[$sf-7]);
+	my $payload_limit = $fpl[$sf-7];
+	# Reserve FOpts space for a possible LinkADRAns, as for LR-FHSS.
+	$payload_limit -= $linkadr_ans if ($fplan eq 'US915' && $adr_on);
+	$npkt{$n} = $payload_limit if ($npkt{$n} > $payload_limit);
 	$npkt{$n} += $overhead_u;
 	print "# $n can reach a gw with SF$sf\n" if ($debug == 1);
 	$sf_distr[$sf-7] += 1;

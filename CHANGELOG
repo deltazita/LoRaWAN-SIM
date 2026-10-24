@@ -1,5 +1,9 @@
 CHANGELOG
 ----------
+v2026.10.24
+* US915 default RX2 SF is now 12
+* minor fixes
+
 v2026.10.22
 * Introduced Nakagami fading; enable it with --fading-m 2; Rayleigh fading can still be used with --fading-m 1 
 * Fading introduces a 5-6% runtime penalty; you can disable it with --no-fading
